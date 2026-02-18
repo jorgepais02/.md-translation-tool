@@ -1,4 +1,4 @@
-# .MD trasnlation tool
+# .MD translation tool
 
 Pipeline automático para **traducir apuntes en Markdown** a múltiples idiomas y generar documentos **Word (.docx)** con formato académico.
 
