@@ -1,3 +1,16 @@
+"""Generate academic-style DOCX documents from Markdown files.
+
+Converts a Markdown file into a DOCX document with:
+  - Academic typography (Times New Roman, CJK, Arabic fonts)
+  - Right-to-left support for Arabic/Hebrew
+  - Header image from public/header.png
+  - Page numbering in footer
+  - Structured headings, bullet lists, numbered lists
+
+Usage:
+    python document_generator.py apuntes.md [output.docx] [--lang es]
+"""
+
 from __future__ import annotations
 
 import re
@@ -8,12 +21,12 @@ from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from docx.shared import Pt, RGBColor, Cm, Inches
+from docx.shared import Pt, RGBColor, Cm
 
 
-# ---------------------------
-# Constants
-# ---------------------------
+# ═══════════════════════════════════════════
+# Constants & Configuration
+# ═══════════════════════════════════════════
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 HEADER_IMAGE = PROJECT_ROOT / "public" / "header.png"
@@ -23,26 +36,32 @@ RTL_LANGS = {"ar", "he", "fa", "ur"}
 
 # Font selection by language
 FONT_MAP = {
-    "zh": "SimSun",          # Chinese – common CJK serif
+    "zh": "SimSun",              # Chinese – common CJK serif
     "ar": "Traditional Arabic",  # Arabic – elegant Naskh
 }
 DEFAULT_FONT = "Times New Roman"
 
 
-# ---------------------------
-# Layout configuration
-# ---------------------------
+# ═══════════════════════════════════════════
+# Typography helpers
+# ═══════════════════════════════════════════
 
-def _font_for(lang: str) -> str:
+def _resolve_font(lang: str) -> str:
+    """Return the appropriate font name for the given language."""
     return FONT_MAP.get(lang, DEFAULT_FONT)
 
 
 def _is_rtl(lang: str) -> bool:
+    """Check whether the language uses right-to-left script."""
     return lang in RTL_LANGS
 
 
-def set_margins_standard(doc: Document) -> None:
-    """Standard academic margins: 2.5 cm."""
+# ═══════════════════════════════════════════
+# Document layout
+# ═══════════════════════════════════════════
+
+def configure_academic_margins(doc: Document) -> None:
+    """Apply standard academic margins (2.5 cm all sides)."""
     section = doc.sections[0]
     section.top_margin = Cm(2.5)
     section.bottom_margin = Cm(2.5)
@@ -50,9 +69,9 @@ def set_margins_standard(doc: Document) -> None:
     section.right_margin = Cm(2.5)
 
 
-def set_style_base(doc: Document, lang: str = "es") -> None:
-    """Configure base typography. Adapts font for language."""
-    font_name = _font_for(lang)
+def configure_base_typography(doc: Document, lang: str = "es") -> None:
+    """Configure base document typography, adapting for language."""
+    font_name = _resolve_font(lang)
 
     normal = doc.styles["Normal"]
     normal.font.name = font_name
@@ -73,9 +92,9 @@ def set_style_base(doc: Document, lang: str = "es") -> None:
     h2.font.color.rgb = RGBColor(0, 0, 0)
 
 
-# ---------------------------
+# ═══════════════════════════════════════════
 # RTL helpers
-# ---------------------------
+# ═══════════════════════════════════════════
 
 def _set_paragraph_rtl(p) -> None:
     """Mark a paragraph as right-to-left at the XML level."""
@@ -93,8 +112,8 @@ def _set_run_rtl(run) -> None:
     rPr.append(rtl_elem)
 
 
-def _apply_rtl(p, lang: str) -> None:
-    """Apply RTL paragraph direction + run flags if language requires it."""
+def _apply_rtl_if_needed(p, lang: str) -> None:
+    """Apply RTL paragraph direction and run flags when required."""
     if not _is_rtl(lang):
         return
     _set_paragraph_rtl(p)
@@ -103,9 +122,9 @@ def _apply_rtl(p, lang: str) -> None:
         _set_run_rtl(run)
 
 
-# ---------------------------
-# Paragraph formatting rules
-# ---------------------------
+# ═══════════════════════════════════════════
+# Spacing constants
+# ═══════════════════════════════════════════
 
 BODY_LINE_SPACING = 1.2
 BODY_SPACE_AFTER_PT = 10
@@ -129,8 +148,13 @@ LIST_HANGING_CM = 0.4
 BULLET_INDENT_SPACES = 2
 
 
-def format_body(p, lang: str = "es") -> None:
-    font_name = _font_for(lang)
+# ═══════════════════════════════════════════
+# Paragraph formatting
+# ═══════════════════════════════════════════
+
+def format_body_paragraph(p, lang: str = "es") -> None:
+    """Apply body-text formatting to a paragraph."""
+    font_name = _resolve_font(lang)
     p.style = "Normal"
     p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
     p.paragraph_format.line_spacing = BODY_LINE_SPACING
@@ -143,10 +167,11 @@ def format_body(p, lang: str = "es") -> None:
         run.font.bold = False
         run.font.color.rgb = RGBColor(0, 0, 0)
 
-    _apply_rtl(p, lang)
+    _apply_rtl_if_needed(p, lang)
 
 
-def format_heading(p, level: int, lang: str = "es") -> None:
+def format_heading_paragraph(p, level: int, lang: str = "es") -> None:
+    """Apply heading formatting to a paragraph at the given level."""
     p.alignment = WD_ALIGN_PARAGRAPH.LEFT
 
     if level == 1:
@@ -163,10 +188,11 @@ def format_heading(p, level: int, lang: str = "es") -> None:
         run.font.bold = False
         run.font.color.rgb = RGBColor(0, 0, 0)
 
-    _apply_rtl(p, lang)
+    _apply_rtl_if_needed(p, lang)
 
 
-def trim_space_after_last_body_paragraph(doc: Document, pt: int = SPACE_AFTER_BEFORE_HEADING_PT) -> None:
+def reduce_spacing_before_heading(doc: Document, pt: int = SPACE_AFTER_BEFORE_HEADING_PT) -> None:
+    """Reduce spacing on the last Normal paragraph before a heading."""
     if not doc.paragraphs:
         return
     last = doc.paragraphs[-1]
@@ -175,7 +201,8 @@ def trim_space_after_last_body_paragraph(doc: Document, pt: int = SPACE_AFTER_BE
         last.paragraph_format.space_after = Pt(pt)
 
 
-def trim_space_before_list(doc: Document, pt: int = 0) -> None:
+def reduce_spacing_before_list(doc: Document, pt: int = 0) -> None:
+    """Reduce spacing on the last Normal paragraph before a list block."""
     if not doc.paragraphs:
         return
     last = doc.paragraphs[-1]
@@ -184,7 +211,8 @@ def trim_space_before_list(doc: Document, pt: int = 0) -> None:
         last.paragraph_format.space_after = Pt(pt)
 
 
-def add_space_after_list_if_needed(doc: Document) -> None:
+def ensure_spacing_after_list(doc: Document) -> None:
+    """Add extra spacing after the last list item if needed."""
     if not doc.paragraphs:
         return
     last = doc.paragraphs[-1]
@@ -193,11 +221,11 @@ def add_space_after_list_if_needed(doc: Document) -> None:
         last.paragraph_format.space_after = Pt(LIST_BLOCK_END_SPACE_AFTER_PT)
 
 
-# ---------------------------
-# Header image
-# ---------------------------
+# ═══════════════════════════════════════════
+# Header & Footer
+# ═══════════════════════════════════════════
 
-def add_header_image(doc: Document) -> None:
+def insert_header_image(doc: Document) -> None:
     """Insert header.png spanning the full page width (edge to edge)."""
     if not HEADER_IMAGE.exists():
         return
@@ -229,11 +257,8 @@ def add_header_image(doc: Document) -> None:
     run.add_picture(str(HEADER_IMAGE), width=page_width)
 
 
-# ---------------------------
-# Footer page number
-# ---------------------------
-
-def add_page_number_footer_right(doc: Document) -> None:
+def insert_page_number_footer(doc: Document) -> None:
+    """Insert an automatic page number in the footer (right-aligned)."""
     section = doc.sections[0]
     footer = section.footer
     p = footer.paragraphs[0] if footer.paragraphs else footer.add_paragraph()
@@ -265,12 +290,13 @@ def add_page_number_footer_right(doc: Document) -> None:
     run.font.color.rgb = RGBColor(0, 0, 0)
 
 
-# ---------------------------
-# Title / Headings / Body
-# ---------------------------
+# ═══════════════════════════════════════════
+# Content insertion helpers
+# ═══════════════════════════════════════════
 
-def add_title(doc: Document, text: str, lang: str = "es") -> None:
-    font_name = _font_for(lang)
+def insert_document_title(doc: Document, text: str, lang: str = "es") -> None:
+    """Insert the main document title (centered, large font)."""
+    font_name = _resolve_font(lang)
     p = doc.add_paragraph()
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
@@ -281,27 +307,30 @@ def add_title(doc: Document, text: str, lang: str = "es") -> None:
     run.font.color.rgb = RGBColor(0, 0, 0)
 
     p.paragraph_format.space_after = Pt(TITLE_SPACE_AFTER_PT)
-    _apply_rtl(p, lang)
+    _apply_rtl_if_needed(p, lang)
 
 
-def add_heading(doc: Document, text: str, md_level: int, lang: str = "es") -> None:
+def insert_heading(doc: Document, text: str, md_level: int, lang: str = "es") -> None:
+    """Insert a section heading (maps Markdown level to Word level)."""
     word_level = max(1, md_level - 1)
     word_level = min(word_level, 9)
     p = doc.add_heading(text.strip(), level=word_level)
-    format_heading(p, level=word_level, lang=lang)
+    format_heading_paragraph(p, level=word_level, lang=lang)
 
 
-def add_body(doc: Document, text: str, lang: str = "es") -> None:
+def insert_body_paragraph(doc: Document, text: str, lang: str = "es") -> None:
+    """Insert a body paragraph with standard formatting."""
     p = doc.add_paragraph(text.rstrip())
-    format_body(p, lang=lang)
+    format_body_paragraph(p, lang=lang)
 
 
-# ---------------------------
-# Lists with "bold before ':'"
-# ---------------------------
+# ═══════════════════════════════════════════
+# List items with "bold before ':'" formatting
+# ═══════════════════════════════════════════
 
-def _add_runs_bold_before_colon(p, text: str, lang: str = "es") -> None:
-    font_name = _font_for(lang)
+def _add_runs_with_bold_label(p, text: str, lang: str = "es") -> None:
+    """Add runs to a paragraph, bolding text before the first colon."""
+    font_name = _resolve_font(lang)
     if ":" in text:
         first, rest = text.split(":", 1)
 
@@ -324,7 +353,8 @@ def _add_runs_bold_before_colon(p, text: str, lang: str = "es") -> None:
         run.font.color.rgb = RGBColor(0, 0, 0)
 
 
-def _apply_list_indents(p, level: int, lang: str = "es") -> None:
+def _apply_list_indentation(p, level: int, lang: str = "es") -> None:
+    """Set list indentation, respecting RTL for Arabic-script languages."""
     if _is_rtl(lang):
         # RTL: indent from the right side
         right = LIST_BASE_LEFT_INDENT_CM + (level * LIST_LEVEL_INDENT_CM)
@@ -336,7 +366,8 @@ def _apply_list_indents(p, level: int, lang: str = "es") -> None:
         p.paragraph_format.first_line_indent = Cm(-LIST_HANGING_CM)
 
 
-def add_bullet(doc: Document, text: str, level: int = 0, lang: str = "es") -> None:
+def insert_bullet_item(doc: Document, text: str, level: int = 0, lang: str = "es") -> None:
+    """Insert a bullet list item at the given nesting level."""
     style = "List Bullet" if level == 0 else "List Bullet 2" if level == 1 else "List Bullet 3"
     p = doc.add_paragraph(style=style)
     p.alignment = WD_ALIGN_PARAGRAPH.LEFT
@@ -344,12 +375,13 @@ def add_bullet(doc: Document, text: str, level: int = 0, lang: str = "es") -> No
     p.paragraph_format.space_before = Pt(LIST_ITEM_SPACE_BEFORE_PT)
     p.paragraph_format.space_after = Pt(LIST_ITEM_SPACE_AFTER_PT)
 
-    _apply_list_indents(p, level, lang=lang)
-    _add_runs_bold_before_colon(p, text, lang=lang)
-    _apply_rtl(p, lang)
+    _apply_list_indentation(p, level, lang=lang)
+    _add_runs_with_bold_label(p, text, lang=lang)
+    _apply_rtl_if_needed(p, lang)
 
 
-def add_numbered(doc: Document, text: str, level: int = 0, lang: str = "es") -> None:
+def insert_numbered_item(doc: Document, text: str, level: int = 0, lang: str = "es") -> None:
+    """Insert a numbered list item at the given nesting level."""
     style = "List Number" if level == 0 else "List Number 2" if level == 1 else "List Number 3"
     p = doc.add_paragraph(style=style)
     p.alignment = WD_ALIGN_PARAGRAPH.LEFT
@@ -357,26 +389,27 @@ def add_numbered(doc: Document, text: str, level: int = 0, lang: str = "es") -> 
     p.paragraph_format.space_before = Pt(LIST_ITEM_SPACE_BEFORE_PT)
     p.paragraph_format.space_after = Pt(LIST_ITEM_SPACE_AFTER_PT)
 
-    _apply_list_indents(p, level, lang=lang)
-    _add_runs_bold_before_colon(p, text, lang=lang)
-    _apply_rtl(p, lang)
+    _apply_list_indentation(p, level, lang=lang)
+    _add_runs_with_bold_label(p, text, lang=lang)
+    _apply_rtl_if_needed(p, lang)
 
 
-# ---------------------------
-# Markdown parsing
-# ---------------------------
+# ═══════════════════════════════════════════
+# Markdown → DOCX conversion
+# ═══════════════════════════════════════════
 
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.*\S)\s*$")
 
 
-def md_to_docx(md_path: Path, docx_path: Path, lang: str = "es") -> None:
+def convert_markdown_to_docx(md_path: Path, docx_path: Path, lang: str = "es") -> None:
+    """Convert a Markdown file into a formatted DOCX document."""
     md_lines = md_path.read_text(encoding="utf-8").splitlines()
 
     doc = Document()
-    set_margins_standard(doc)
-    set_style_base(doc, lang=lang)
-    add_header_image(doc)
-    add_page_number_footer_right(doc)
+    configure_academic_margins(doc)
+    configure_base_typography(doc, lang=lang)
+    insert_header_image(doc)
+    insert_page_number_footer(doc)
 
     # Set document-level RTL if needed
     if _is_rtl(lang):
@@ -394,8 +427,8 @@ def md_to_docx(md_path: Path, docx_path: Path, lang: str = "es") -> None:
         para = " ".join(line.strip() for line in buffer).strip()
         buffer = []
         if para:
-            add_space_after_list_if_needed(doc)
-            add_body(doc, para, lang=lang)
+            ensure_spacing_after_list(doc)
+            insert_body_paragraph(doc, para, lang=lang)
 
     for line in md_lines:
         m = HEADING_RE.match(line)
@@ -405,11 +438,11 @@ def md_to_docx(md_path: Path, docx_path: Path, lang: str = "es") -> None:
             level = len(hashes)
 
             if level == 1 and not title_written:
-                add_title(doc, heading_text, lang=lang)
+                insert_document_title(doc, heading_text, lang=lang)
                 title_written = True
             else:
-                trim_space_after_last_body_paragraph(doc)
-                add_heading(doc, heading_text, md_level=level, lang=lang)
+                reduce_spacing_before_heading(doc)
+                insert_heading(doc, heading_text, md_level=level, lang=lang)
             continue
 
         if line.strip() == "":
@@ -430,15 +463,15 @@ def md_to_docx(md_path: Path, docx_path: Path, lang: str = "es") -> None:
         m_num = re.match(r"^(\d+)\.\s+(.*\S)\s*$", s)
         if m_num:
             flush_buffer()
-            trim_space_before_list(doc, pt=0)
+            reduce_spacing_before_list(doc, pt=0)
             content = m_num.group(2).strip()
-            add_numbered(doc, content, level=level, lang=lang)
+            insert_numbered_item(doc, content, level=level, lang=lang)
             continue
 
         # Bullet list
         if s.startswith("- "):
             flush_buffer()
-            trim_space_before_list(doc, pt=0)
+            reduce_spacing_before_list(doc, pt=0)
             content = s[2:].strip()
 
             if " - " in content:
@@ -446,9 +479,9 @@ def md_to_docx(md_path: Path, docx_path: Path, lang: str = "es") -> None:
                 for part in parts:
                     if part.startswith("- "):
                         part = part[2:].strip()
-                    add_bullet(doc, part, level=level, lang=lang)
+                    insert_bullet_item(doc, part, level=level, lang=lang)
             else:
-                add_bullet(doc, content, level=level, lang=lang)
+                insert_bullet_item(doc, content, level=level, lang=lang)
             continue
 
         buffer.append(line)
@@ -457,19 +490,19 @@ def md_to_docx(md_path: Path, docx_path: Path, lang: str = "es") -> None:
     doc.save(docx_path)
 
 
-# ---------------------------
+# ═══════════════════════════════════════════
 # CLI
-# ---------------------------
+# ═══════════════════════════════════════════
 
 def main(argv: list[str]) -> int:
     if len(argv) < 2:
-        print("Uso:")
-        print("  python make_notes.py apuntes.md [salida.docx] [--lang es]")
+        print("Usage:")
+        print("  python document_generator.py input.md [output.docx] [--lang es]")
         return 2
 
     md_path = Path(argv[1]).expanduser().resolve()
     if not md_path.exists():
-        print(f"ERROR: No existe {md_path}")
+        print(f"ERROR: File not found: {md_path}")
         return 2
 
     out = Path(argv[2]).expanduser().resolve() if len(argv) >= 3 else md_path.with_suffix(".docx")
@@ -481,7 +514,7 @@ def main(argv: list[str]) -> int:
         if idx + 1 < len(argv):
             lang = argv[idx + 1].lower()
 
-    md_to_docx(md_path, out, lang=lang)
+    convert_markdown_to_docx(md_path, out, lang=lang)
 
     print(f"OK -> {out}")
     return 0
