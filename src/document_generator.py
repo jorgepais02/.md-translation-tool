@@ -91,6 +91,27 @@ def configure_base_typography(doc: Document, lang: str = "es") -> None:
     h2.font.bold = False
     h2.font.color.rgb = RGBColor(0, 0, 0)
 
+    # Set Complex Script (CS) font and BiDi status for RTL languages
+    if _is_rtl(lang):
+        for style_name in ["Normal", "Heading 1", "Heading 2"]:
+            style = doc.styles[style_name]
+            rPr = style._element.get_or_add_rPr()
+            rFonts = rPr.get_or_add_rFonts()
+            rFonts.set(qn("w:cs"), font_name)
+            
+            rtl = OxmlElement("w:rtl")
+            rtl.set(qn("w:val"), "1")
+            rPr.append(rtl)
+            
+            pPr = style._element.get_or_add_pPr()
+            bidi = OxmlElement("w:bidi")
+            bidi.set(qn("w:val"), "1")
+            pPr.append(bidi)
+            
+            jc = OxmlElement("w:jc")
+            jc.set(qn("w:val"), "right")
+            pPr.append(jc)
+
 
 # ═══════════════════════════════════════════
 # RTL helpers
@@ -99,17 +120,42 @@ def configure_base_typography(doc: Document, lang: str = "es") -> None:
 def _set_paragraph_rtl(p) -> None:
     """Mark a paragraph as right-to-left at the XML level."""
     pPr = p._p.get_or_add_pPr()
-    bidi = OxmlElement("w:bidi")
-    bidi.set(qn("w:val"), "1")
-    pPr.append(bidi)
+    # Check if bidi is already there
+    bidi = pPr.find(qn("w:bidi"))
+    if bidi is None:
+        bidi = OxmlElement("w:bidi")
+        bidi.set(qn("w:val"), "1")
+        pPr.insert(0, bidi)
+    else:
+        bidi.set(qn("w:val"), "1")
+    
+    # Also set justification to RIGHT explicitly at XML level for better compatibility
+    jc = pPr.find(qn("w:jc"))
+    if jc is None:
+        jc = OxmlElement("w:jc")
+        jc.set(qn("w:val"), "right")
+        pPr.append(jc)
+    else:
+        jc.set(qn("w:val"), "right")
 
 
-def _set_run_rtl(run) -> None:
+def _set_run_rtl(run, font_name: str | None = None) -> None:
     """Mark a run as right-to-left and set complex-script font."""
     rPr = run._r.get_or_add_rPr()
-    rtl_elem = OxmlElement("w:rtl")
-    rtl_elem.set(qn("w:val"), "1")
-    rPr.append(rtl_elem)
+    rtl_elem = rPr.find(qn("w:rtl"))
+    if rtl_elem is None:
+        rtl_elem = OxmlElement("w:rtl")
+        rtl_elem.set(qn("w:val"), "1")
+        rPr.append(rtl_elem)
+    else:
+        rtl_elem.set(qn("w:val"), "1")
+    
+    if font_name:
+        rFonts = rPr.get_or_add_rFonts()
+        rFonts.set(qn("w:cs"), font_name)
+        # For mixed text, setting ASCII and HAnsi helps Word stay stable
+        rFonts.set(qn("w:ascii"), "Times New Roman")
+        rFonts.set(qn("w:hAnsi"), "Times New Roman")
 
 
 def _apply_rtl_if_needed(p, lang: str) -> None:
@@ -118,8 +164,9 @@ def _apply_rtl_if_needed(p, lang: str) -> None:
         return
     _set_paragraph_rtl(p)
     p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    font_name = _resolve_font(lang)
     for run in p.runs:
-        _set_run_rtl(run)
+        _set_run_rtl(run, font_name)
 
 
 # ═══════════════════════════════════════════
@@ -172,7 +219,10 @@ def format_body_paragraph(p, lang: str = "es") -> None:
 
 def format_heading_paragraph(p, level: int, lang: str = "es") -> None:
     """Apply heading formatting to a paragraph at the given level."""
-    p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    if _is_rtl(lang):
+        p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    else:
+        p.alignment = WD_ALIGN_PARAGRAPH.LEFT
 
     if level == 1:
         p.paragraph_format.space_before = Pt(H1_SPACE_BEFORE_PT)
@@ -356,11 +406,14 @@ def _add_runs_with_bold_label(p, text: str, lang: str = "es") -> None:
 def _apply_list_indentation(p, level: int, lang: str = "es") -> None:
     """Set list indentation, respecting RTL for Arabic-script languages."""
     if _is_rtl(lang):
-        # RTL: indent from the right side
+        # RTL: Word behavior for 'left' indent is actually 'start' if bidi is on? No, it's literal.
+        # We must set both left and right carefully.
+        p.paragraph_format.left_indent = Cm(0)  # Reset left
         right = LIST_BASE_LEFT_INDENT_CM + (level * LIST_LEVEL_INDENT_CM)
         p.paragraph_format.right_indent = Cm(right)
         p.paragraph_format.first_line_indent = Cm(-LIST_HANGING_CM)
     else:
+        p.paragraph_format.right_indent = Cm(0) # Reset right
         left = LIST_BASE_LEFT_INDENT_CM + (level * LIST_LEVEL_INDENT_CM)
         p.paragraph_format.left_indent = Cm(left)
         p.paragraph_format.first_line_indent = Cm(-LIST_HANGING_CM)
@@ -368,9 +421,17 @@ def _apply_list_indentation(p, level: int, lang: str = "es") -> None:
 
 def insert_bullet_item(doc: Document, text: str, level: int = 0, lang: str = "es") -> None:
     """Insert a bullet list item at the given nesting level."""
-    style = "List Bullet" if level == 0 else "List Bullet 2" if level == 1 else "List Bullet 3"
-    p = doc.add_paragraph(style=style)
-    p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    if _is_rtl(lang):
+        # Use Normal style for RTL to avoid LTR-hardcoded bullet behaviors
+        p = doc.add_paragraph()
+        _set_paragraph_rtl(p)
+        p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        # Manual bullet character for RTL - using Arabic bullet '\u2022' or similar
+        text = f"• {text}"
+    else:
+        style = "List Bullet" if level == 0 else "List Bullet 2" if level == 1 else "List Bullet 3"
+        p = doc.add_paragraph(style=style)
+        p.alignment = WD_ALIGN_PARAGRAPH.LEFT
     p.paragraph_format.line_spacing = BODY_LINE_SPACING
     p.paragraph_format.space_before = Pt(LIST_ITEM_SPACE_BEFORE_PT)
     p.paragraph_format.space_after = Pt(LIST_ITEM_SPACE_AFTER_PT)
@@ -382,15 +443,36 @@ def insert_bullet_item(doc: Document, text: str, level: int = 0, lang: str = "es
 
 def insert_numbered_item(doc: Document, text: str, level: int = 0, lang: str = "es") -> None:
     """Insert a numbered list item at the given nesting level."""
-    style = "List Number" if level == 0 else "List Number 2" if level == 1 else "List Number 3"
-    p = doc.add_paragraph(style=style)
-    p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    if _is_rtl(lang):
+        p = doc.add_paragraph()
+        p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    else:
+        style = "List Number" if level == 0 else "List Number 2" if level == 1 else "List Number 3"
+        p = doc.add_paragraph(style=style)
+        p.alignment = WD_ALIGN_PARAGRAPH.LEFT
     p.paragraph_format.line_spacing = BODY_LINE_SPACING
     p.paragraph_format.space_before = Pt(LIST_ITEM_SPACE_BEFORE_PT)
     p.paragraph_format.space_after = Pt(LIST_ITEM_SPACE_AFTER_PT)
 
     _apply_list_indentation(p, level, lang=lang)
     _add_runs_with_bold_label(p, text, lang=lang)
+    _apply_rtl_if_needed(p, lang)
+
+
+def insert_alphabetic_item(doc: Document, label: str, text: str, level: int = 0, lang: str = "es") -> None:
+    """Insert an alphabetic list item (e.g., A) or b.) with manual labels."""
+    # We use Normal style but apply list-like indentation
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    p.paragraph_format.line_spacing = BODY_LINE_SPACING
+    p.paragraph_format.space_before = Pt(LIST_ITEM_SPACE_BEFORE_PT)
+    p.paragraph_format.space_after = Pt(LIST_ITEM_SPACE_AFTER_PT)
+
+    _apply_list_indentation(p, level, lang=lang)
+    
+    # Prepend the label (e.g., "A) ") to the text so it matches the input
+    full_text = f"{label} {text}"
+    _add_runs_with_bold_label(p, full_text, lang=lang)
     _apply_rtl_if_needed(p, lang)
 
 
@@ -415,9 +497,16 @@ def convert_markdown_to_docx(md_path: Path, docx_path: Path, lang: str = "es") -
     if _is_rtl(lang):
         for section in doc.sections:
             sectPr = section._sectPr
+            # Set BiDi on the section
             bidi = OxmlElement("w:bidi")
             bidi.set(qn("w:val"), "1")
             sectPr.append(bidi)
+            
+            # Ensure RTL columns and orientation if needed (usually not needed for simple text)
+            # But we can force Right-To-Left Gutter/Text direction at section level
+            rtl_gutter = OxmlElement("w:rtlGutter")
+            rtl_gutter.set(qn("w:val"), "1")
+            sectPr.append(rtl_gutter)
 
     title_written = False
     buffer: list[str] = []
@@ -466,6 +555,16 @@ def convert_markdown_to_docx(md_path: Path, docx_path: Path, lang: str = "es") -
             reduce_spacing_before_list(doc, pt=0)
             content = m_num.group(2).strip()
             insert_numbered_item(doc, content, level=level, lang=lang)
+            continue
+
+        # Alphabetic list (e.g., A) or b.)
+        m_alpha = re.match(r"^([a-zA-Z])([\)\.])\s+(.*\S)\s*$", s)
+        if m_alpha:
+            flush_buffer()
+            reduce_spacing_before_list(doc, pt=0)
+            label = m_alpha.group(1) + m_alpha.group(2)
+            content = m_alpha.group(3).strip()
+            insert_alphabetic_item(doc, label, content, level=level, lang=lang)
             continue
 
         # Bullet list

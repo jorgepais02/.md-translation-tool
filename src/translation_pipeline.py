@@ -23,16 +23,46 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import itertools
 import os
 import re
 import shutil
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 
 import requests
 from dotenv import load_dotenv
 
+from translators import get_translator, LANG_MAP, DEFAULT_LANGS
+
+class Spinner:
+    def __init__(self, message: str):
+        self.message = message
+        self.spinner = itertools.cycle(["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"])
+        self.running = False
+        self.task = None
+
+    def spin(self):
+        while self.running:
+            sys.stdout.write(f"\r{self.message} {next(self.spinner)}")
+            sys.stdout.flush()
+            time.sleep(0.1)
+
+    def start(self):
+        self.running = True
+        self.task = threading.Thread(target=self.spin, daemon=True)
+        self.task.start()
+
+    def stop(self, success_msg: str):
+        self.running = False
+        if self.task is not None:
+            self.task.join()
+        sys.stdout.write("\r\033[K")
+        sys.stdout.flush()
+        print(f"{self.message} {success_msg}")
 
 # ═══════════════════════════════════════════
 # Configuration
@@ -40,31 +70,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-DEEPL_API_KEY = os.getenv("DEEPL_API_KEY", "")
-
-# Keys ending in ":fx" belong to the free plan → api-free.deepl.com
-if DEEPL_API_KEY.endswith(":fx"):
-    DEEPL_BASE = "https://api-free.deepl.com"
-else:
-    DEEPL_BASE = "https://api.deepl.com"
-
-TRANSLATE_URL = f"{DEEPL_BASE}/v2/translate"
-
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SOURCES_DIR = PROJECT_ROOT / "sources"
 TRANSLATED_DIR = PROJECT_ROOT / "translated"
-
-# DeepL code → short filename code
-LANG_MAP = {
-    "EN-GB": "en",
-    "FR":    "fr",
-    "AR":    "ar",
-    "ZH":    "zh",
-}
-
-DEFAULT_LANGS = list(LANG_MAP.keys())
-
-MAX_BATCH_SIZE = 50
 
 
 # ═══════════════════════════════════════════
@@ -150,43 +158,6 @@ def rebuild_markdown_from_translations(
 
 
 # ═══════════════════════════════════════════
-# DeepL API
-# ═══════════════════════════════════════════
-
-def translate_texts_via_deepl(texts: list[str], target_lang: str) -> list[str]:
-    """Translate a list of text strings in batched DeepL API calls."""
-    if not texts:
-        return []
-
-    if not DEEPL_API_KEY:
-        print("ERROR: DEEPL_API_KEY not found in .env", file=sys.stderr)
-        sys.exit(1)
-
-    headers = {
-        "Authorization": f"DeepL-Auth-Key {DEEPL_API_KEY}",
-        "Content-Type": "application/json",
-    }
-
-    results: list[str] = []
-
-    for i in range(0, len(texts), MAX_BATCH_SIZE):
-        chunk = texts[i : i + MAX_BATCH_SIZE]
-        payload = {
-            "text": chunk,
-            "target_lang": target_lang,
-        }
-
-        resp = requests.post(TRANSLATE_URL, json=payload, headers=headers, timeout=60)
-        resp.raise_for_status()
-        data = resp.json()
-
-        for item in data["translations"]:
-            results.append(item["text"])
-
-    return results
-
-
-# ═══════════════════════════════════════════
 # Document generation (DOCX + PDF)
 # ═══════════════════════════════════════════
 
@@ -239,11 +210,21 @@ def convert_docx_to_pdf(docx_file: Path) -> None:
 # Pipeline orchestration
 # ═══════════════════════════════════════════
 
-def process_source_file(md_path: Path, langs: list[str]) -> None:
-    """Translate one .md file and generate DOCX + PDF for each language.
+def process_source_file(md_path: Path, langs: list[str], translator, use_google: bool = False, no_local: bool = False) -> None:
+    """Translate one .md file and generate DOCX + PDF (local) or upload to Google Docs.
 
     Output goes to translated/<lang>/<lang>.md, .docx, .pdf
     """
+    g_manager = None
+    if use_google:
+        from google_docs_manager import GoogleDocsManager
+        try:
+            g_manager = GoogleDocsManager()
+        except Exception as e:
+            print(f"ERROR: Google Docs Auth failed: {e}", file=sys.stderr)
+            print("Please ensure credentials.json is present in the project root.", file=sys.stderr)
+            sys.exit(1)
+
     lines = md_path.read_text(encoding="utf-8").splitlines()
     parsed = parse_markdown_lines(lines)
 
@@ -254,32 +235,80 @@ def process_source_file(md_path: Path, langs: list[str]) -> None:
         print("  ⚠ No translatable text found.")
         return
 
-    # 1. Copy original as es.md + DOCX + PDF
-    es_folder = TRANSLATED_DIR / "es"
-    es_folder.mkdir(parents=True, exist_ok=True)
-    es_file = es_folder / "es.md"
-    shutil.copy2(md_path, es_file)
-    print(f"  ▸ es (original) → {es_file.relative_to(PROJECT_ROOT)}")
-    docx_file = generate_docx_document(es_file, "es")
-    convert_docx_to_pdf(docx_file)
+    # 1. Handle original Spanish file
+    if not no_local:
+        es_folder = TRANSLATED_DIR / "es"
+        es_folder.mkdir(parents=True, exist_ok=True)
+        es_file = es_folder / "es.md"
+        shutil.copy2(md_path, es_file)
+        print(f"  ▸ {md_path.stem} (ES) → {es_file.relative_to(PROJECT_ROOT)}")
+        docx_file = generate_docx_document(es_file, "es")
+        convert_docx_to_pdf(docx_file)
+    else:
+        print(f"  ▸ {md_path.stem} (ES)")
+
+    if g_manager:
+        spinner = Spinner("      ☁️  Uploading to Google Drive...")
+        spinner.start()
+        try:
+            doc_id = g_manager.create_document(f"ES - {md_path.stem}")
+            # Setup layout: Header with image + Footer with page numbers
+            header_img = PROJECT_ROOT / "public" / "header.png"
+            g_manager.upload_markdown_content(doc_id, lines, "es")
+            doc_url = g_manager.get_document_url(doc_id)
+            if not hasattr(process_source_file, "generated_links"):
+                process_source_file.generated_links = {}
+            process_source_file.generated_links["es"] = doc_url
+            spinner.stop("✓")
+        except Exception as e:
+            spinner.stop("❌")
+            print(f"      Error: {e}")
 
     # 2. Translate to each target language
-    for deepl_code in langs:
-        short = LANG_MAP.get(deepl_code, deepl_code.lower().split("-")[0])
-        print(f"  ▸ Translating to {short} ({deepl_code})…", end=" ", flush=True)
+    for lang_code in langs:
+        short = LANG_MAP.get(lang_code, lang_code.lower().split("-")[0])
+        
+        spinner = Spinner(f"  ▸ Translating to {short.upper()} ({lang_code})…")
+        spinner.start()
+        try:
+            translated = translator.translate(texts_to_translate, lang_code)
+            rebuilt = rebuild_markdown_from_translations(parsed, translated)
+            spinner.stop("✓")
+        except Exception as e:
+            spinner.stop("❌")
+            print(f"      Error: {e}")
+            continue
 
-        translated = translate_texts_via_deepl(texts_to_translate, deepl_code)
-        rebuilt = rebuild_markdown_from_translations(parsed, translated)
+        # Local output
+        if not no_local:
+            lang_folder = TRANSLATED_DIR / short
+            lang_folder.mkdir(parents=True, exist_ok=True)
+            out_file = lang_folder / f"{short}.md"
+            out_file.write_text("\n".join(rebuilt) + "\n", encoding="utf-8")
+            
+            docx_file = generate_docx_document(out_file, short)
+            convert_docx_to_pdf(docx_file)
 
-        lang_folder = TRANSLATED_DIR / short
-        lang_folder.mkdir(parents=True, exist_ok=True)
+        # Google Docs output
+        if g_manager:
+            spinner = Spinner("      ☁️  Uploading to Google Drive...")
+            spinner.start()
+            try:
+                doc_id = g_manager.create_document(f"{short.upper()} - {md_path.stem}")
+                # Setup layout: Header with image + Footer with page numbers
+                header_img = PROJECT_ROOT / "public" / "header.png"
+                is_rtl = short in ["ar", "he", "fa", "ur"]
+                g_manager.setup_document_layout(doc_id, header_image_path=header_img, is_rtl=is_rtl)
+                g_manager.upload_markdown_content(doc_id, rebuilt, short)
+                doc_url = g_manager.get_document_url(doc_id)
+                if not hasattr(process_source_file, "generated_links"):
+                    process_source_file.generated_links = {}
+                process_source_file.generated_links[short] = doc_url
+                spinner.stop("✓")
+            except Exception as e:
+                spinner.stop("❌")
+                print(f"      Error: {e}")
 
-        out_file = lang_folder / f"{short}.md"
-        out_file.write_text("\n".join(rebuilt) + "\n", encoding="utf-8")
-        print("OK")
-
-        docx_file = generate_docx_document(out_file, short)
-        convert_docx_to_pdf(docx_file)
 
 
 # ═══════════════════════════════════════════
@@ -288,7 +317,7 @@ def process_source_file(md_path: Path, langs: list[str]) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(
-        description="Translate Markdown files via DeepL and generate DOCX + PDF."
+        description="Translate Markdown files via selected provider and generate DOCX + PDF."
     )
     ap.add_argument(
         "md",
@@ -301,9 +330,32 @@ def main() -> None:
         "--langs",
         nargs="+",
         default=DEFAULT_LANGS,
-        help=f"DeepL target language codes (default: {' '.join(DEFAULT_LANGS)})",
+        help=f"Target language codes (default: {' '.join(DEFAULT_LANGS)})",
+    )
+    ap.add_argument(
+        "--provider",
+        choices=["deepl", "azure"],
+        default="deepl",
+        help="Translation provider to use (default: deepl)",
+    )
+    ap.add_argument(
+        "--google",
+        action="store_true",
+        help="Upload translated documents directly to Google Docs",
+    )
+    ap.add_argument(
+        "--no-local",
+        action="store_true",
+        help="Skip generating local DOCX and PDF (useful if using Google Docs output instead)",
     )
     args = ap.parse_args()
+
+    # Initialize translator
+    try:
+        translator = get_translator(args.provider)
+    except Exception as e:
+        print(f"ERROR: Failed to initialize translator: {e}", file=sys.stderr)
+        sys.exit(1)
 
     # Determine which files to process
     if args.md:
@@ -325,9 +377,19 @@ def main() -> None:
         print(f"\n{'='*60}")
         print(f"  File: {md_path.name}")
         print(f"{'='*60}")
-        process_source_file(md_path, args.langs)
+        process_source_file(md_path, args.langs, translator, use_google=args.google, no_local=args.no_local)
 
-    print(f"\n✓ Pipeline complete. Output in: {TRANSLATED_DIR}")
+    if args.no_local and args.google:
+        print(f"\n✓ Pipeline complete. Documents uploaded to Google Drive.")
+    elif args.no_local and not args.google:
+        print(f"\n✓ Pipeline complete. Markdown strings translated in: {TRANSLATED_DIR}")
+    else:
+        print(f"\n✓ Pipeline complete. Output in: {TRANSLATED_DIR}")
+        
+    if getattr(process_source_file, "generated_links", None):
+        print("\nGoogle Docs Links:")
+        for lang, link in process_source_file.generated_links.items():
+            print(f"  [{lang.upper()}] \033]8;;{link}\033\\{link}\033]8;;\033\\")
 
 
 if __name__ == "__main__":
