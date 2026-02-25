@@ -254,6 +254,7 @@ def process_source_file(md_path: Path, langs: list[str], translator, use_google:
             doc_id = g_manager.create_document(f"ES - {md_path.stem}")
             # Setup layout: Header with image + Footer with page numbers
             header_img = PROJECT_ROOT / "public" / "header.png"
+            g_manager.setup_document_layout(doc_id, header_image_path=header_img, is_rtl=False)
             g_manager.upload_markdown_content(doc_id, lines, "es")
             doc_url = g_manager.get_document_url(doc_id)
             if not hasattr(process_source_file, "generated_links"):

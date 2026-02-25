@@ -10,6 +10,8 @@ __pycache__/
 secrets/
 .token.json
 
+to-do.md
+
 # macOS
 .DS_Store
 
@@ -19,3 +21,8 @@ secrets/
 
 # Salida generada
 translated/
+
+# Output
+sources/apuntes.md
+
+

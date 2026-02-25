@@ -13,6 +13,7 @@ Usage:
 
 from __future__ import annotations
 
+import argparse
 import re
 import sys
 from pathlib import Path
@@ -36,8 +37,8 @@ RTL_LANGS = {"ar", "he", "fa", "ur"}
 
 # Font selection by language
 FONT_MAP = {
-    "zh": "SimSun",              # Chinese – common CJK serif
-    "ar": "Traditional Arabic",  # Arabic – elegant Naskh
+    "zh": "SimSun",  # Chinese – common CJK serif
+    "ar": "Amiri",  # Arabic – elegant Naskh (user requested)
 }
 DEFAULT_FONT = "Times New Roman"
 
@@ -203,10 +204,14 @@ def format_body_paragraph(p, lang: str = "es") -> None:
     """Apply body-text formatting to a paragraph."""
     font_name = _resolve_font(lang)
     p.style = "Normal"
-    p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-    p.paragraph_format.line_spacing = BODY_LINE_SPACING
+    p.alignment = WD_ALIGN_PARAGRAPH.RIGHT if _is_rtl(lang) else WD_ALIGN_PARAGRAPH.JUSTIFY
+    
+    line_spacing = 1.3 if _is_rtl(lang) else 1.2
+    space_after = Pt(8) if _is_rtl(lang) else Pt(6)
+    
+    p.paragraph_format.line_spacing = line_spacing
     p.paragraph_format.space_before = Pt(0)
-    p.paragraph_format.space_after = Pt(BODY_SPACE_AFTER_PT)
+    p.paragraph_format.space_after = space_after
 
     for run in p.runs:
         run.font.name = font_name
@@ -379,28 +384,13 @@ def insert_body_paragraph(doc: Document, text: str, lang: str = "es") -> None:
 # ═══════════════════════════════════════════
 
 def _add_runs_with_bold_label(p, text: str, lang: str = "es") -> None:
-    """Add runs to a paragraph, bolding text before the first colon."""
+    """Add runs to a paragraph. (Bolding before colon removed per user request)"""
     font_name = _resolve_font(lang)
-    if ":" in text:
-        first, rest = text.split(":", 1)
-
-        run_bold = p.add_run(first.strip() + ":")
-        run_bold.bold = True
-        run_bold.font.name = font_name
-        run_bold.font.size = Pt(12)
-        run_bold.font.color.rgb = RGBColor(0, 0, 0)
-
-        run_normal = p.add_run(" " + rest.strip())
-        run_normal.bold = False
-        run_normal.font.name = font_name
-        run_normal.font.size = Pt(12)
-        run_normal.font.color.rgb = RGBColor(0, 0, 0)
-    else:
-        run = p.add_run(text.strip())
-        run.bold = False
-        run.font.name = font_name
-        run.font.size = Pt(12)
-        run.font.color.rgb = RGBColor(0, 0, 0)
+    run = p.add_run(text.strip())
+    run.bold = False
+    run.font.name = font_name
+    run.font.size = Pt(12)
+    run.font.color.rgb = RGBColor(0, 0, 0)
 
 
 def _apply_list_indentation(p, level: int, lang: str = "es") -> None:
@@ -432,7 +422,7 @@ def insert_bullet_item(doc: Document, text: str, level: int = 0, lang: str = "es
         style = "List Bullet" if level == 0 else "List Bullet 2" if level == 1 else "List Bullet 3"
         p = doc.add_paragraph(style=style)
         p.alignment = WD_ALIGN_PARAGRAPH.LEFT
-    p.paragraph_format.line_spacing = BODY_LINE_SPACING
+    p.paragraph_format.line_spacing = 1.3 if _is_rtl(lang) else 1.2
     p.paragraph_format.space_before = Pt(LIST_ITEM_SPACE_BEFORE_PT)
     p.paragraph_format.space_after = Pt(LIST_ITEM_SPACE_AFTER_PT)
 
@@ -450,7 +440,7 @@ def insert_numbered_item(doc: Document, text: str, level: int = 0, lang: str = "
         style = "List Number" if level == 0 else "List Number 2" if level == 1 else "List Number 3"
         p = doc.add_paragraph(style=style)
         p.alignment = WD_ALIGN_PARAGRAPH.LEFT
-    p.paragraph_format.line_spacing = BODY_LINE_SPACING
+    p.paragraph_format.line_spacing = 1.3 if _is_rtl(lang) else 1.2
     p.paragraph_format.space_before = Pt(LIST_ITEM_SPACE_BEFORE_PT)
     p.paragraph_format.space_after = Pt(LIST_ITEM_SPACE_AFTER_PT)
 
@@ -464,7 +454,7 @@ def insert_alphabetic_item(doc: Document, label: str, text: str, level: int = 0,
     # We use Normal style but apply list-like indentation
     p = doc.add_paragraph()
     p.alignment = WD_ALIGN_PARAGRAPH.LEFT
-    p.paragraph_format.line_spacing = BODY_LINE_SPACING
+    p.paragraph_format.line_spacing = 1.3 if _is_rtl(lang) else 1.2
     p.paragraph_format.space_before = Pt(LIST_ITEM_SPACE_BEFORE_PT)
     p.paragraph_format.space_after = Pt(LIST_ITEM_SPACE_AFTER_PT)
 
@@ -593,25 +583,26 @@ def convert_markdown_to_docx(md_path: Path, docx_path: Path, lang: str = "es") -
 # CLI
 # ═══════════════════════════════════════════
 
-def main(argv: list[str]) -> int:
-    if len(argv) < 2:
-        print("Usage:")
-        print("  python document_generator.py input.md [output.docx] [--lang es]")
-        return 2
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Convert Markdown to DOCX with academic formatting.")
+    parser.add_argument("input", type=Path, help="Path to the input Markdown file.")
+    parser.add_argument("output", type=Path, nargs="?", help="Optional path for the output DOCX. Defaults to input with .docx extension.")
+    parser.add_argument("--lang", default="es", help="Language code for formatting (e.g., 'es', 'ar', 'zh'). Default is 'es'.")
+    
+    # Check if we are being called via legacy sys.argv style or let argparse handle sys.argv
+    # To keep it simple and standard:
+    args = parser.parse_args()
 
-    md_path = Path(argv[1]).expanduser().resolve()
+    md_path = args.input.expanduser().resolve()
     if not md_path.exists():
         print(f"ERROR: File not found: {md_path}")
         return 2
 
-    out = Path(argv[2]).expanduser().resolve() if len(argv) >= 3 else md_path.with_suffix(".docx")
-
-    # Parse optional --lang flag
-    lang = "es"
-    if "--lang" in argv:
-        idx = argv.index("--lang")
-        if idx + 1 < len(argv):
-            lang = argv[idx + 1].lower()
+    # If output is not provided, use input name but with .docx
+    out = args.output if args.output else md_path.with_suffix(".docx")
+    out = out.expanduser().resolve()
+    
+    lang = args.lang.lower()
 
     convert_markdown_to_docx(md_path, out, lang=lang)
 
@@ -620,4 +611,4 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv))
+    raise SystemExit(main())

@@ -206,7 +206,12 @@ class GoogleDocsManager:
         
         # 3. Apply common styles and RTL
         total_len = len(full_text)
-        font_family = 'Noto Serif SC' if lang == 'zh' else 'Times New Roman'
+        if lang == 'zh':
+            font_family = 'Noto Serif SC'
+        elif lang == 'ar':
+            font_family = 'Amiri'
+        else:
+            font_family = 'Times New Roman'
         
         requests.append({
             'updateTextStyle': {
@@ -225,11 +230,12 @@ class GoogleDocsManager:
                     'range': {'startIndex': 1, 'endIndex': 1 + total_len},
                     'paragraphStyle': {
                         'direction': 'RIGHT_TO_LEFT',
-                        'alignment': 'JUSTIFIED',
-                        'spaceBelow': {'magnitude': 6, 'unit': 'PT'},
-                        'spaceAbove': {'magnitude': 0, 'unit': 'PT'}
+                        'alignment': 'END',
+                        'spaceBelow': {'magnitude': 8, 'unit': 'PT'},
+                        'spaceAbove': {'magnitude': 0, 'unit': 'PT'},
+                        'lineSpacing': 130
                     },
-                    'fields': 'direction,alignment,spaceBelow,spaceAbove'
+                    'fields': 'direction,alignment,spaceBelow,spaceAbove,lineSpacing'
                 }
             })
         else:
@@ -289,7 +295,7 @@ class GoogleDocsManager:
                 requests.append({
                     'createParagraphBullets': {
                         'range': {'startIndex': start, 'endIndex': end},
-                        'bulletPreset': 'NUMBERED_DECIMAL_PAREN_THEN_ALPHA_PAREN'
+                        'bulletPreset': 'NUMBERED_DECIMAL_ALPHA_ROMAN'
                     }
                 })
                 
@@ -303,19 +309,6 @@ class GoogleDocsManager:
                             'alignment': 'END'
                         },
                         'fields': 'direction,alignment'
-                    }
-                })
-
-            # 5. Bold labels (text before ":")
-            # We examine the content of this paragraph
-            para_text = full_text[start-1:end-1]
-            if ":" in para_text:
-                label_len = para_text.find(":") + 1
-                requests.append({
-                    'updateTextStyle': {
-                        'range': {'startIndex': start, 'endIndex': start + label_len},
-                        'textStyle': {'bold': True},
-                        'fields': 'bold'
                     }
                 })
 
