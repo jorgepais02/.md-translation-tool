@@ -1,84 +1,114 @@
-# نمذجة التهديدات للأنظمة المعتمدة على الذكاء الاصطناعي
+# Killing the Kill-Chain (V): Caso práctico y recomendaciones finales
 
-## مقدمة
+## Caso práctico: Compromiso completo de un Directorio Activo
 
-إن دمج أنظمة الذكاء الاصطناعي في العمليات المؤسسية يخلق سطح هجوم جديدًا لا تغطيه بالكامل نماذج التهديد التقليدية. العديد من المؤسسات لا تمتلك عملية رسمية مخصصة لنمذجة التهديدات في الأنظمة التي تعتمد على النماذج اللغوية الكبيرة.
+Se presenta un escenario real basado en auditorías internas que ilustra una Kill Chain completa en un entorno Windows con Active Directory.
 
-## الاختلاف عن الأنظمة التقليدية
+La infraestructura se segmenta en:
 
-في النماذج التقليدية يتم التركيز على قضايا مثل المصادقة، وحقن SQL، وهجمات XSS. أما أنظمة الذكاء الاصطناعي فتضيف أصولًا ومتجهات تهديد جديدة.
+- Red del atacante.
+- Red de estaciones de trabajo.
+- Red de servidores.
 
-### النموذج كأصل أمني
+### Acceso inicial
 
-يُعد النموذج نفسه أصلًا يمكن سرقته أو التلاعب به أو دفعه إلى سلوك غير مقصود. بخلاف الشيفرة التقليدية، يظهر سلوك النموذج من خلال مخرجاته بشكل مباشر.
+El atacante obtiene credenciales filtradas o adquiridas en mercados ilegales. Comprueba su validez y accede a la VPN corporativa como usuario de dominio sin privilegios.
 
-### بيانات التدريب
+### Escalada de privilegios local
 
-يمكن سرقة بيانات التدريب أو تسميمها قبل نشر النظام، مما يؤثر على أساس النموذج وموثوقيته.
+Ya dentro de la red de estaciones de trabajo, el objetivo es obtener privilegios de administrador local. Posibles vectores:
 
-### التعليمات (Prompts)
+- Acceso físico a un equipo sin disco cifrado.
+- Explotación de vulnerabilidades locales.
+- Descubrimiento de contraseñas almacenadas de forma insegura.
 
-تُعد التعليمات جزءًا من منطق التشغيل. مدخلات المستخدم قد تؤثر في سلوك النظام إذا لم يتم تقييدها بشكل مناسب.
+Una vez alcanzado el rol de administrador local, puede acceder a información sensible del sistema.
 
-### المخرجات غير الحتمية
+### Movimiento lateral hacia servidores
 
-قد ينتج عن الإدخال نفسه مخرجات مختلفة، مما يصعّب عمليات الاختبار والتحقق الأمني.
+El atacante extrae credenciales almacenadas en caché. Si encuentra credenciales de administradores que hayan iniciado sesión previamente, puede pivotar hacia la red de servidores.
 
-## هجوم حقن التعليمات
+En esta red se encuentran activos críticos y cuentas con mayores privilegios.
 
-يتمثل حقن التعليمات في إدخال أوامر مصممة لتغيير سلوك النموذج. في حال غياب ضوابط مناسبة، قد يكشف النظام معلومات حساسة أو ينفذ إجراءات غير مقصودة.
+### Compromiso del dominio
 
-## إطار MITRE ATLAS
+Mediante la extracción progresiva de credenciales en servidores, el atacante puede alcanzar cuentas con privilegios de Domain Admin.
 
-يُصنّف MITRE ATLAS التهديدات ضمن ست تكتيكات رئيسية.
+Con este acceso llega al Domain Controller, el activo más crítico del entorno.
 
-### الاستطلاع
+### Persistencia y explotación masiva
 
-تحليل النموذج المستخدم، بنيته، ومصادر بياناته.
+Una vez comprometido el controlador de dominio:
 
-### تطوير الموارد
+- Se vuelcan credenciales de todos los usuarios.
+- Se crackean contraseñas débiles.
+- Se obtiene la cuenta asociada al TGT de Kerberos.
+- Se genera un Golden Ticket con persistencia prolongada.
 
-إعداد أدوات أو نماذج بديلة أو نصوص برمجية لدعم الهجوم.
+Para invalidar un Golden Ticket es necesario restablecer la contraseña de Kerberos en dos ocasiones consecutivas.
 
-### الوصول الأولي
+### Exfiltración e impacto
 
-محاولة الدخول إلى خط أنابيب التعلم الآلي عبر واجهات برمجية أو مجموعات بيانات عامة أو مكونات خارجية.
+El atacante puede descifrar secretos almacenados en navegadores y acceder a cuentas corporativas. Esto permite:
 
-### إعداد الهجوم
+- Exfiltrar información confidencial.
+- Robar documentación técnica.
+- Realizar extorsión bajo amenaza de publicación.
 
-إنشاء أمثلة عدائية أو إدخال بيانات مسممة.
+El objetivo final suele ser económico o estratégico.
 
-### الاستخراج
+## Recomendaciones fundamentales de seguridad
 
-سرقة النموذج أو بيانات التدريب أو نتائج التنبؤ.
+### Segmentación de comunicaciones
 
-### التأثير
+Limitar la comunicación entre estaciones de trabajo y entre clientes y servidores.
 
-الإضرار بسلامة النظام أو توافره أو خصوصيته، بما في ذلك تقليل الدقة أو إنتاج محتوى ضار.
+### Filtrado de salida
 
-## OWASP Top 10 للأنظمة المعتمدة على LLM (إصدار 2025)
+Restringir conexiones salientes desde servidores para evitar exfiltración y autenticaciones externas maliciosas.
 
-تشمل المخاطر ذات الأولوية:
+### Evitar almacenamiento de credenciales
 
-1. حقن التعليمات.
-2. تسريب المعلومات الحساسة.
-3. ثغرات سلسلة التوريد.
-4. تسميم النموذج أو البيانات.
-5. التعامل غير السليم مع المخرجات.
-6. منح النظام صلاحيات مفرطة دون إشراف بشري.
-7. تسريب التعليمات الداخلية للنظام.
-8. ضعف قواعد البيانات المتجهية.
-9. التضليل والهلوسة.
-10. استهلاك الموارد بشكل مفرط.
+Impedir el cacheo de credenciales en equipos de usuario.
 
-## إجراءات التخفيف
+### Gestión periódica de Kerberos
 
-في الأنظمة المعتمدة على RAG يُوصى بما يلي:
+Restablecer periódicamente la cuenta TGT y realizar doble cambio para invalidar posibles tickets fraudulentos.
 
-- التحقق الصارم من المدخلات.
-- تنقية المخرجات قبل استخدامها.
-- تطبيق مبدأ أقل قدر من الصلاحيات.
-- استخدام آليات ضبط إضافية للتحقق من الاستجابات.
-- المراقبة المستمرة عبر سجلات الاستخدام وتحليل الشذوذ.
+### Control de acceso a documentos sensibles
 
-تُعد نمذجة التهديدات في أنظمة الذكاء الاصطناعي عملية مستمرة تتطلب تحديثًا دوريًا نظرًا للطبيعة الديناميكية لهذه التقنيات.
+Aplicar políticas que eviten lectura no autorizada incluso en caso de publicación accidental.
+
+### Reducción de superficie de ataque
+
+Limitar servicios, protocolos y puertos abiertos.
+
+### Auditoría continua
+
+Revisar cuentas, grupos y privilegios de forma periódica.
+
+### Control de aplicaciones
+
+Implementar mecanismos que restrinjan la ejecución de software no autorizado.
+
+### Sistemas trampa
+
+Desplegar honeypots o honey tokens para detectar actividad maliciosa temprana.
+
+### Protección de sesiones
+
+Evitar la enumeración remota de sesiones activas.
+
+### Protección de procesos críticos
+
+Asegurar procesos donde se almacenan credenciales de dominio.
+
+### Deshabilitar administradores locales
+
+Evitar el uso de cuentas administrativas locales en estaciones de trabajo y servidores.
+
+## Conclusión
+
+El compromiso total de un dominio suele ser consecuencia de múltiples fallos encadenados.
+
+La combinación de segmentación, control de privilegios, auditoría continua, cifrado y monitorización reduce significativamente la probabilidad de que un atacante complete toda la Kill Chain.

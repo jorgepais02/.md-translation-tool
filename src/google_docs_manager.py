@@ -17,6 +17,16 @@ SCOPES = [
 
 RTL_LANGS = {"ar", "he", "fa", "ur"}
 
+LANG_NAMES = {
+    "es": "Español",
+    "en": "Inglés",
+    "en-gb": "Inglés",
+    "en-us": "Inglés",
+    "fr": "Francés",
+    "ar": "Árabe",
+    "zh": "Chino"
+}
+
 class GoogleDocsManager:
     """Manages Google Docs creation, text insertion, and advanced formatting."""
     
@@ -51,10 +61,103 @@ class GoogleDocsManager:
         
         return creds
 
-    def create_document(self, title: str) -> str:
-        """Create a new Google Doc and return its ID."""
-        doc = self.docs_service.documents().create(body={'title': title}).execute()
-        return doc.get('documentId')
+    def get_or_create_subfolder(self, parent_id: str, folder_name: str) -> str:
+        """Find a subfolder by name within a parent folder case-insensitively, or create it if it doesn't exist."""
+        # Query all folders inside the parent
+        query = f"'{parent_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"
+        target_name_normalized = folder_name.strip().lower()
+        
+        page_token = None
+        while True:
+            # We add includeItemsFromAllDrives so Shared Drives aren't skipped
+            results = self.drive_service.files().list(
+                q=query, 
+                fields='nextPageToken, files(id, name)',
+                corpora='allDrives',
+                includeItemsFromAllDrives=True,
+                supportsAllDrives=True,
+                pageToken=page_token
+            ).execute()
+            
+            files = results.get('files', [])
+            
+            # Case insensitive exact match in Python
+            for f in files:
+                if f.get('name', '').strip().lower() == target_name_normalized:
+                    return f.get('id')
+                    
+            page_token = results.get('nextPageToken')
+            if not page_token:
+                break
+            
+        # Create folder if it doesn't exist
+        file_metadata = {
+            'name': folder_name,
+            'mimeType': 'application/vnd.google-apps.folder',
+            'parents': [parent_id]
+        }
+        folder = self.drive_service.files().create(
+            body=file_metadata,
+            fields='id',
+            supportsAllDrives=True
+        ).execute()
+        return folder.get('id')
+        
+    def get_next_sequential_name(self, folder_id: str) -> str:
+        """Count the number of files in a folder and return the next sequential number as a string."""
+        query = f"'{folder_id}' in parents and mimeType='application/vnd.google-apps.document' and trashed=false"
+        # Using pagination to get accurate count if there are many files
+        count = 0
+        page_token = None
+        while True:
+            results = self.drive_service.files().list(
+                q=query, 
+                fields='nextPageToken, files(id)', 
+                corpora='allDrives',
+                includeItemsFromAllDrives=True,
+                supportsAllDrives=True,
+                pageToken=page_token
+            ).execute()
+            count += len(results.get('files', []))
+            page_token = results.get('nextPageToken')
+            if not page_token:
+                break
+        
+        return str(count + 1)
+
+    def create_document(self, title: str, folder_id: str | None = None, lang: str = "es") -> str:
+        """Create a new Google Doc, optionally directly inside a Drive subfolder based on the language.
+        If a parent folder_id is provided, it creates a subfolder for the language (e.g. 'Español')
+        and names the document sequentially (1, 2, 3...).
+        """
+        doc_name = title
+        target_folder_id = folder_id
+
+        if folder_id:
+            # Determine Spanish name for the language
+            lang_key = lang.lower()
+            lang_folder_name = LANG_NAMES.get(lang_key, lang.upper())
+            
+            # Get or create the subfolder
+            target_folder_id = self.get_or_create_subfolder(folder_id, lang_folder_name)
+            
+            # Determine sequential document name
+            doc_name = self.get_next_sequential_name(target_folder_id)
+
+        file_metadata = {
+            'name': doc_name,
+            'mimeType': 'application/vnd.google-apps.document'
+        }
+        
+        if target_folder_id:
+            file_metadata['parents'] = [target_folder_id]
+
+        file = self.drive_service.files().create(
+            body=file_metadata, 
+            fields='id',
+            supportsAllDrives=True
+        ).execute()
+        return file.get('id')
 
     def _upload_image_to_drive(self, image_path: Path) -> dict:
         """Upload an image to Drive, make it public, and return the file dict (id and link)."""
@@ -155,56 +258,161 @@ class GoogleDocsManager:
                 print(f"Warning: Failed to delete temporary header image from Drive: {e}")
 
     def upload_markdown_content(self, doc_id: str, lines: list[str], lang: str):
-        """Parse simple Markdown lines and insert into Google Doc with formatting."""
-        requests = []
+        """Parse Markdown lines and insert into Google Doc with full formatting."""
+        import re
+
+        requests_list = []
         is_rtl = lang in RTL_LANGS
         
         full_text = ""
-        formats = [] # Store (start, end, type, level/data)
+        formats = []  # (start, end, type, level, is_consecutive)
+        inline_formats = []  # (start_in_doc, end_in_doc, style_dict)
         
         current_offset = 0
+        in_code_block = False
+        prev_type = None
+
+        # Inline formatting regex
+        _INLINE_RE = re.compile(
+            r'(?P<bold_italic>\*\*\*(.+?)\*\*\*)'
+            r'|(?P<bold>\*\*(.+?)\*\*)'
+            r'|(?P<italic>\*(.+?)\*)'
+            r'|(?P<code>`([^`]+)`)'
+            r'|(?P<link>\[([^\]]+)\]\(([^)]+)\))'
+        )
+
+        def _strip_inline_markers(text):
+            clean = ""
+            fmt_ranges = []
+            last_end = 0
+            for m in _INLINE_RE.finditer(text):
+                clean += text[last_end:m.start()]
+                seg_start = len(clean)
+                if m.group("bold_italic"):
+                    inner = m.group(2)
+                    clean += inner
+                    fmt_ranges.append((seg_start, seg_start + len(inner), {"bold": True, "italic": True}))
+                elif m.group("bold"):
+                    inner = m.group(4)
+                    clean += inner
+                    fmt_ranges.append((seg_start, seg_start + len(inner), {"bold": True}))
+                elif m.group("italic"):
+                    inner = m.group(6)
+                    clean += inner
+                    fmt_ranges.append((seg_start, seg_start + len(inner), {"italic": True}))
+                elif m.group("code"):
+                    inner = m.group(8)
+                    clean += inner
+                    fmt_ranges.append((seg_start, seg_start + len(inner), {"code": True}))
+                elif m.group("link"):
+                    link_text = m.group(10)
+                    link_url = m.group(11)
+                    clean += link_text
+                    fmt_ranges.append((seg_start, seg_start + len(link_text), {"link": link_url}))
+                last_end = m.end()
+            clean += text[last_end:]
+            return clean, fmt_ranges
+
         for line in lines:
-            line = line.rstrip()
-            if not line:
-                # Skip empty lines in the text payload, relying on spaceBelow/spaceAbove for visual padding
+            # Code block toggling ignores line stripping to maintain format logic
+            if line.strip().startswith("```"):
+                in_code_block = not in_code_block
                 continue
             
+            # Inside code block: preserve exact spaces, do not rstrip entirely
+            if in_code_block:
+                content = line + "\n"
+                full_text += content
+                formats.append((start, start + len(content), 'CODE_BLOCK', 0, False))
+                current_offset += len(content)
+                prev_type = 'CODE_BLOCK'
+                continue
+
+            # Outside code block: normal processing
+            line = line.rstrip()
+            if not line:
+                continue
+
             start = 1 + current_offset
-            
-            # Semantic parsing
+
             if line.startswith("#"):
                 hashes = line.split(" ")[0]
                 level = len(hashes)
-                content = " ".join(line.split(" ")[1:]) + "\n"
+                raw_content = " ".join(line.split(" ")[1:])
+                clean_content, fmt_ranges = _strip_inline_markers(raw_content)
+                content = clean_content + "\n"
                 full_text += content
-                formats.append((start, start + len(content), 'HEADING', level))
+                is_consecutive = (prev_type == 'HEADING')
+                formats.append((start, start + len(content), 'HEADING', level, is_consecutive))
+                for fs, fe, style in fmt_ranges:
+                    inline_formats.append((start + fs, start + fe, style))
                 current_offset += len(content)
+                prev_type = 'HEADING'
+            elif line.startswith("> ") or line.startswith(">"):
+                quote_text = line.lstrip(">").strip()
+                clean_content, fmt_ranges = _strip_inline_markers(quote_text)
+                content = clean_content + "\n"
+                full_text += content
+                formats.append((start, start + len(content), 'BLOCKQUOTE', 0, False))
+                for fs, fe, style in fmt_ranges:
+                    inline_formats.append((start + fs, start + fe, style))
+                current_offset += len(content)
+                prev_type = 'BLOCKQUOTE'
+            elif line.startswith("---") or line.startswith("***"):
+                # Simpler divider logic
+                full_text += "---\n"
+                formats.append((start, start + 4, 'NORMAL', 0, False))
+                current_offset += 4
+                prev_type = 'NORMAL'
             elif line.startswith("- "):
-                content = line[2:] + "\n"
+                raw_content = line[2:]
+                clean_content, fmt_ranges = _strip_inline_markers(raw_content)
+                content = clean_content + "\n"
                 full_text += content
-                formats.append((start, start + len(content), 'BULLET', 0))
+                formats.append((start, start + len(content), 'BULLET', 0, False))
+                for fs, fe, style in fmt_ranges:
+                    inline_formats.append((start + fs, start + fe, style))
                 current_offset += len(content)
+                prev_type = 'BULLET'
             elif line.strip() and line[0].isdigit() and ". " in line:
                 parts = line.split(". ", 1)
-                content = parts[1] + "\n"
+                raw_content = parts[1]
+                clean_content, fmt_ranges = _strip_inline_markers(raw_content)
+                content = clean_content + "\n"
                 full_text += content
-                formats.append((start, start + len(content), 'NUMBER', 0))
+                formats.append((start, start + len(content), 'NUMBER', 0, False))
+                for fs, fe, style in fmt_ranges:
+                    inline_formats.append((start + fs, start + fe, style))
                 current_offset += len(content)
+                prev_type = 'NUMBER'
             else:
-                content = line + "\n"
+                clean_content, fmt_ranges = _strip_inline_markers(line.strip())
+                content = clean_content + "\n"
                 full_text += content
-                formats.append((start, start + len(content), 'NORMAL', 0))
+                
+                # If this is indented and comes right after a bullet/number, treat as bullet continuation
+                if (line.startswith("  ") or line.startswith("\t")) and prev_type in ('BULLET', 'NUMBER'):
+                    formats.append((start, start + len(content), 'BULLET_CONT', 0, False))
+                    prev_type = 'BULLET_CONT'
+                elif prev_type == 'BULLET_CONT' and (line.startswith("  ") or line.startswith("\t")):
+                    formats.append((start, start + len(content), 'BULLET_CONT', 0, False))
+                else:
+                    formats.append((start, start + len(content), 'NORMAL', 0, False))
+                    prev_type = 'NORMAL'
+                
+                for fs, fe, style in fmt_ranges:
+                    inline_formats.append((start + fs, start + fe, style))
                 current_offset += len(content)
 
         # 1. Insert all text
-        requests.append({
+        requests_list.append({
             'insertText': {
                 'location': {'index': 1},
                 'text': full_text
             }
         })
         
-        # 3. Apply common styles and RTL
+        # 2. Common styles
         total_len = len(full_text)
         if lang == 'zh':
             font_family = 'Noto Serif SC'
@@ -213,7 +421,7 @@ class GoogleDocsManager:
         else:
             font_family = 'Times New Roman'
         
-        requests.append({
+        requests_list.append({
             'updateTextStyle': {
                 'range': {'startIndex': 1, 'endIndex': 1 + total_len},
                 'textStyle': {
@@ -225,7 +433,7 @@ class GoogleDocsManager:
         })
 
         if is_rtl:
-            requests.append({
+            requests_list.append({
                 'updateParagraphStyle': {
                     'range': {'startIndex': 1, 'endIndex': 1 + total_len},
                     'paragraphStyle': {
@@ -239,30 +447,31 @@ class GoogleDocsManager:
                 }
             })
         else:
-            # Set standard spacing and justification for LTR 
-            requests.append({
+            requests_list.append({
                 'updateParagraphStyle': {
                     'range': {'startIndex': 1, 'endIndex': 1 + total_len},
                     'paragraphStyle': {
                         'alignment': 'JUSTIFIED',
-                        'spaceBelow': {'magnitude': 6, 'unit': 'PT'},
-                        'spaceAbove': {'magnitude': 0, 'unit': 'PT'}
+                        'spaceBelow': {'magnitude': 10, 'unit': 'PT'},
+                        'spaceAbove': {'magnitude': 0, 'unit': 'PT'},
+                        'lineSpacing': 115
                     },
-                    'fields': 'alignment,spaceBelow,spaceAbove'
+                    'fields': 'alignment,spaceBelow,spaceAbove,lineSpacing'
                 }
             })
 
-        # 4. Apply specific styles (Headings, Lists, Bolding)
-        for start, end, ftype, level in formats:
+        # 3. Block-level styles
+        for start, end, ftype, level, is_consecutive in formats:
             if ftype == 'HEADING':
-                # Map # -> TITLE, ## -> HEADING_1, ### -> HEADING_2
                 named_style = 'TITLE' if level == 1 else f'HEADING_{min(level - 1, 6)}'
+                if is_consecutive:
+                    space_below = 4
+                    space_above = 6
+                else:
+                    space_below = 36 if level == 1 else 8
+                    space_above = 0 if level == 1 else 36
                 
-                # Dynamic spacing: Title needs large space below, Headings need large space above to separate sections
-                space_below = 36 if level == 1 else 8
-                space_above = 0 if level == 1 else 36
-                
-                requests.append({
+                requests_list.append({
                     'updateParagraphStyle': {
                         'range': {'startIndex': start, 'endIndex': end},
                         'paragraphStyle': {
@@ -274,34 +483,70 @@ class GoogleDocsManager:
                         'fields': 'namedStyleType,alignment,spaceBelow,spaceAbove'
                     }
                 })
-                # Set font for headings back to base font to avoid fallback font inconsistency
-                requests.append({
+                requests_list.append({
                     'updateTextStyle': {
                         'range': {'startIndex': start, 'endIndex': end},
                         'textStyle': {'weightedFontFamily': {'fontFamily': font_family}},
                         'fields': 'weightedFontFamily'
                     }
                 })
+
+            elif ftype == 'BLOCKQUOTE':
+                requests_list.append({
+                    'updateParagraphStyle': {
+                        'range': {'startIndex': start, 'endIndex': end},
+                        'paragraphStyle': {
+                            'indentStart': {'magnitude': 36, 'unit': 'PT'},
+                            'spaceBelow': {'magnitude': 4, 'unit': 'PT'},
+                            'spaceAbove': {'magnitude': 4, 'unit': 'PT'},
+                        },
+                        'fields': 'indentStart,spaceBelow,spaceAbove'
+                    }
+                })
+                requests_list.append({
+                    'updateTextStyle': {
+                        'range': {'startIndex': start, 'endIndex': end},
+                        'textStyle': {
+                            'italic': True,
+                            'foregroundColor': {'color': {'rgbColor': {'red': 0.4, 'green': 0.4, 'blue': 0.4}}}
+                        },
+                        'fields': 'italic,foregroundColor'
+                    }
+                })
+
+            elif ftype == 'CODE_BLOCK':
+                pass # Revert code block complexity back to simple normal text processing for Google Docs
             
-            if ftype == 'BULLET':
-                requests.append({
+
+            elif ftype == 'BULLET_CONT':
+                requests_list.append({
+                    'updateParagraphStyle': {
+                        'range': {'startIndex': start, 'endIndex': end},
+                        'paragraphStyle': {
+                            'indentStart': {'magnitude': 36, 'unit': 'PT'},
+                        },
+                        'fields': 'indentStart'
+                    }
+                })
+            
+            elif ftype == 'BULLET':
+                requests_list.append({
                     'createParagraphBullets': {
                         'range': {'startIndex': start, 'endIndex': end},
                         'bulletPreset': 'BULLET_DISC_CIRCLE_SQUARE'
                     }
                 })
+
             elif ftype == 'NUMBER':
-                # Create actual lists
-                requests.append({
+                requests_list.append({
                     'createParagraphBullets': {
                         'range': {'startIndex': start, 'endIndex': end},
                         'bulletPreset': 'NUMBERED_DECIMAL_ALPHA_ROMAN'
                     }
                 })
                 
-            # Force RTL direction specifically on lists because createParagraphBullets can reset it
-            if is_rtl and (ftype == 'BULLET' or ftype == 'NUMBER'):
-                requests.append({
+            if is_rtl and ftype in ('BULLET', 'NUMBER'):
+                requests_list.append({
                     'updateParagraphStyle': {
                         'range': {'startIndex': start, 'endIndex': end},
                         'paragraphStyle': {
@@ -312,9 +557,39 @@ class GoogleDocsManager:
                     }
                 })
 
+        # 4. Inline formatting
+        for istart, iend, style in inline_formats:
+            text_style = {}
+            fields = []
+            if style.get("bold"):
+                text_style["bold"] = True
+                fields.append("bold")
+            if style.get("italic"):
+                text_style["italic"] = True
+                fields.append("italic")
+            if style.get("code"):
+                text_style["weightedFontFamily"] = {"fontFamily": "Courier New"}
+                text_style["backgroundColor"] = {"color": {"rgbColor": {"red": 0.91, "green": 0.91, "blue": 0.91}}}
+                fields.extend(["weightedFontFamily", "backgroundColor"])
+            if style.get("link"):
+                text_style["link"] = {"url": style["link"]}
+                text_style["foregroundColor"] = {"color": {"rgbColor": {"red": 0.0, "green": 0.0, "blue": 0.93}}}
+                text_style["underline"] = True
+                fields.extend(["link", "foregroundColor", "underline"])
+
+            if text_style and fields:
+                requests_list.append({
+                    'updateTextStyle': {
+                        'range': {'startIndex': istart, 'endIndex': iend},
+                        'textStyle': text_style,
+                        'fields': ','.join(fields)
+                    }
+                })
+
         # Execute all updates
-        if requests:
-            self.docs_service.documents().batchUpdate(documentId=doc_id, body={'requests': requests}).execute()
+        if requests_list:
+            self.docs_service.documents().batchUpdate(documentId=doc_id, body={'requests': requests_list}).execute()
 
     def get_document_url(self, doc_id: str) -> str:
         return f"https://docs.google.com/document/d/{doc_id}/edit"
+

@@ -41,6 +41,16 @@ FONT_MAP = {
     "ar": "Amiri",  # Arabic – elegant Naskh (user requested)
 }
 DEFAULT_FONT = "Times New Roman"
+MONOSPACE_FONT = "Courier New"
+
+# Inline formatting regex (order matters: bold before italic)
+_INLINE_RE = re.compile(
+    r'(?P<bold_italic>\*\*\*(.+?)\*\*\*)'
+    r'|(?P<bold>\*\*(.+?)\*\*)'
+    r'|(?P<italic>\*(.+?)\*)'
+    r'|(?P<code>`([^`]+)`)'
+    r'|(?P<link>\[([^\]]+)\]\(([^)]+)\))'
+)
 
 
 # ═══════════════════════════════════════════
@@ -380,17 +390,94 @@ def insert_body_paragraph(doc: Document, text: str, lang: str = "es") -> None:
 
 
 # ═══════════════════════════════════════════
-# List items with "bold before ':'" formatting
+# Inline formatting helpers
 # ═══════════════════════════════════════════
 
-def _add_runs_with_bold_label(p, text: str, lang: str = "es") -> None:
-    """Add runs to a paragraph. (Bolding before colon removed per user request)"""
+def _parse_inline_formatting(text: str) -> list[dict]:
+    """Split text into segments with inline formatting metadata.
+
+    Each segment is a dict with keys:
+      text, bold, italic, code, link_url
+    """
+    segments: list[dict] = []
+    last_end = 0
+
+    for m in _INLINE_RE.finditer(text):
+        # Plain text before this match
+        if m.start() > last_end:
+            segments.append({
+                "text": text[last_end:m.start()],
+                "bold": False, "italic": False, "code": False, "link_url": None,
+            })
+
+        if m.group("bold_italic"):
+            segments.append({
+                "text": m.group(2),
+                "bold": True, "italic": True, "code": False, "link_url": None,
+            })
+        elif m.group("bold"):
+            segments.append({
+                "text": m.group(4),
+                "bold": True, "italic": False, "code": False, "link_url": None,
+            })
+        elif m.group("italic"):
+            segments.append({
+                "text": m.group(6),
+                "bold": False, "italic": True, "code": False, "link_url": None,
+            })
+        elif m.group("code"):
+            segments.append({
+                "text": m.group(8),
+                "bold": False, "italic": False, "code": True, "link_url": None,
+            })
+        elif m.group("link"):
+            segments.append({
+                "text": m.group(10),
+                "bold": False, "italic": False, "code": False, "link_url": m.group(11),
+            })
+        last_end = m.end()
+
+    # Trailing plain text
+    if last_end < len(text):
+        segments.append({
+            "text": text[last_end:],
+            "bold": False, "italic": False, "code": False, "link_url": None,
+        })
+
+    # If no formatting found, return single plain segment
+    if not segments:
+        segments.append({
+            "text": text,
+            "bold": False, "italic": False, "code": False, "link_url": None,
+        })
+
+    return segments
+
+
+def _add_formatted_runs(p, text: str, lang: str = "es", font_size_pt: int = 12) -> None:
+    """Add runs with inline formatting (bold, italic, code, links) to a paragraph."""
     font_name = _resolve_font(lang)
-    run = p.add_run(text.strip())
-    run.bold = False
-    run.font.name = font_name
-    run.font.size = Pt(12)
-    run.font.color.rgb = RGBColor(0, 0, 0)
+    segments = _parse_inline_formatting(text.strip())
+
+    for seg in segments:
+        run = p.add_run(seg["text"])
+        run.font.name = font_name if not seg["code"] else MONOSPACE_FONT
+        run.font.size = Pt(font_size_pt if not seg["code"] else max(font_size_pt - 1, 9))
+        run.font.color.rgb = RGBColor(0, 0, 0)
+        run.bold = seg["bold"]
+        run.italic = seg["italic"]
+
+        if seg["code"]:
+            # Light grey background shading for inline code
+            shd = OxmlElement("w:shd")
+            shd.set(qn("w:val"), "clear")
+            shd.set(qn("w:color"), "auto")
+            shd.set(qn("w:fill"), "E8E8E8")
+            run._r.get_or_add_rPr().append(shd)
+
+        if seg["link_url"]:
+            run.font.color.rgb = RGBColor(0, 0, 238)
+            run.font.underline = True
 
 
 def _apply_list_indentation(p, level: int, lang: str = "es") -> None:
@@ -427,7 +514,7 @@ def insert_bullet_item(doc: Document, text: str, level: int = 0, lang: str = "es
     p.paragraph_format.space_after = Pt(LIST_ITEM_SPACE_AFTER_PT)
 
     _apply_list_indentation(p, level, lang=lang)
-    _add_runs_with_bold_label(p, text, lang=lang)
+    _add_formatted_runs(p, text, lang=lang)
     _apply_rtl_if_needed(p, lang)
 
 
@@ -445,7 +532,7 @@ def insert_numbered_item(doc: Document, text: str, level: int = 0, lang: str = "
     p.paragraph_format.space_after = Pt(LIST_ITEM_SPACE_AFTER_PT)
 
     _apply_list_indentation(p, level, lang=lang)
-    _add_runs_with_bold_label(p, text, lang=lang)
+    _add_formatted_runs(p, text, lang=lang)
     _apply_rtl_if_needed(p, lang)
 
 
@@ -462,8 +549,80 @@ def insert_alphabetic_item(doc: Document, label: str, text: str, level: int = 0,
     
     # Prepend the label (e.g., "A) ") to the text so it matches the input
     full_text = f"{label} {text}"
-    _add_runs_with_bold_label(p, full_text, lang=lang)
+    _add_formatted_runs(p, full_text, lang=lang)
     _apply_rtl_if_needed(p, lang)
+
+
+# ═══════════════════════════════════════════
+# Blockquote & Code Block helpers
+# ═══════════════════════════════════════════
+
+def insert_blockquote(doc: Document, text: str, lang: str = "es") -> None:
+    """Insert a blockquote paragraph with left border and indent."""
+    font_name = _resolve_font(lang)
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.RIGHT if _is_rtl(lang) else WD_ALIGN_PARAGRAPH.LEFT
+    p.paragraph_format.left_indent = Cm(1.5)
+    p.paragraph_format.space_before = Pt(4)
+    p.paragraph_format.space_after = Pt(4)
+    p.paragraph_format.line_spacing = 1.2
+
+    # Left border via XML
+    pPr = p._p.get_or_add_pPr()
+    pBdr = OxmlElement("w:pBdr")
+    left_bdr = OxmlElement("w:left")
+    left_bdr.set(qn("w:val"), "single")
+    left_bdr.set(qn("w:sz"), "12")
+    left_bdr.set(qn("w:space"), "8")
+    left_bdr.set(qn("w:color"), "999999")
+    pBdr.append(left_bdr)
+    pPr.append(pBdr)
+
+    # Paragraph shading
+    shd = OxmlElement("w:shd")
+    shd.set(qn("w:val"), "clear")
+    shd.set(qn("w:color"), "auto")
+    shd.set(qn("w:fill"), "F5F5F5")
+    pPr.append(shd)
+
+    _add_formatted_runs(p, text, lang=lang)
+    _apply_rtl_if_needed(p, lang)
+
+
+def insert_code_block_line(doc: Document, text: str, lang: str = "es") -> None:
+    """Insert a single line of a fenced code block."""
+    p = doc.add_paragraph(text)
+    format_body_paragraph(p, lang=lang)
+
+
+def insert_simple_table(doc: Document, header_row: list[str], data_rows: list[list[str]], lang: str = "es") -> None:
+    """Insert a simple markdown table into the document."""
+    font_name = _resolve_font(lang)
+    cols = len(header_row)
+    table = doc.add_table(rows=1 + len(data_rows), cols=cols)
+    table.style = "Table Grid"
+
+    # Header
+    for i, h in enumerate(header_row):
+        cell = table.rows[0].cells[i]
+        cell.text = ""
+        p = cell.paragraphs[0]
+        run = p.add_run(h.strip())
+        run.bold = True
+        run.font.name = font_name
+        run.font.size = Pt(11)
+
+    # Data
+    for r_idx, row in enumerate(data_rows):
+        for c_idx, val in enumerate(row):
+            if c_idx >= cols:
+                break
+            cell = table.rows[r_idx + 1].cells[c_idx]
+            cell.text = ""
+            p = cell.paragraphs[0]
+            run = p.add_run(val.strip())
+            run.font.name = font_name
+            run.font.size = Pt(11)
 
 
 # ═══════════════════════════════════════════
@@ -471,6 +630,10 @@ def insert_alphabetic_item(doc: Document, label: str, text: str, level: int = 0,
 # ═══════════════════════════════════════════
 
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.*\S)\s*$")
+BLOCKQUOTE_RE = re.compile(r"^>\s?(.*)") 
+CODE_FENCE_RE = re.compile(r"^```")
+TABLE_ROW_RE = re.compile(r"^\|(.+)\|\s*$")
+TABLE_SEP_RE = re.compile(r"^\|[\s\-:|]+\|\s*$")
 
 
 def convert_markdown_to_docx(md_path: Path, docx_path: Path, lang: str = "es") -> None:
@@ -487,29 +650,91 @@ def convert_markdown_to_docx(md_path: Path, docx_path: Path, lang: str = "es") -
     if _is_rtl(lang):
         for section in doc.sections:
             sectPr = section._sectPr
-            # Set BiDi on the section
             bidi = OxmlElement("w:bidi")
             bidi.set(qn("w:val"), "1")
             sectPr.append(bidi)
-            
-            # Ensure RTL columns and orientation if needed (usually not needed for simple text)
-            # But we can force Right-To-Left Gutter/Text direction at section level
             rtl_gutter = OxmlElement("w:rtlGutter")
             rtl_gutter.set(qn("w:val"), "1")
             sectPr.append(rtl_gutter)
 
     title_written = False
+    last_was_heading = False  # Track consecutive headings for spacing fix
+    last_element_type = 'NORMAL'
+    last_list_level = 0
     buffer: list[str] = []
+    in_code_block = False
+    code_block_lines: list[str] = []
+    table_rows: list[str] = []  # Accumulate raw table rows
 
     def flush_buffer() -> None:
         nonlocal buffer
         para = " ".join(line.strip() for line in buffer).strip()
+        buffer_type = last_element_type
         buffer = []
         if para:
             ensure_spacing_after_list(doc)
-            insert_body_paragraph(doc, para, lang=lang)
+            p = doc.add_paragraph()
+            _add_formatted_runs(p, para, lang=lang)
+            if buffer_type == 'BULLET_CONT':
+                p.paragraph_format.line_spacing = 1.3 if _is_rtl(lang) else 1.2
+                p.paragraph_format.space_before = Pt(0)
+                p.paragraph_format.space_after = Pt(LIST_ITEM_SPACE_AFTER_PT)
+                _apply_list_indentation(p, last_list_level, lang=lang)
+                _apply_rtl_if_needed(p, lang)
+            else:
+                format_body_paragraph(p, lang=lang)
+
+    def flush_code_block() -> None:
+        nonlocal code_block_lines
+        for cl in code_block_lines:
+            insert_code_block_line(doc, cl, lang=lang)
+        code_block_lines = []
+
+    def flush_table() -> None:
+        nonlocal table_rows
+        if len(table_rows) < 2:
+            # Not a real table, treat as body text
+            for row in table_rows:
+                buffer.append(row)
+            table_rows = []
+            return
+        # Parse header and data
+        header_cells = [c.strip() for c in table_rows[0].strip("|").split("|")]
+        data: list[list[str]] = []
+        for row in table_rows[1:]:
+            if TABLE_SEP_RE.match(row):
+                continue  # skip separator row
+            cells = [c.strip() for c in row.strip("|").split("|")]
+            data.append(cells)
+        if data:
+            insert_simple_table(doc, header_cells, data, lang=lang)
+        table_rows = []
 
     for line in md_lines:
+        # ── Code blocks ──────────────────────────
+        if CODE_FENCE_RE.match(line.strip()):
+            if in_code_block:
+                flush_code_block()
+                in_code_block = False
+            else:
+                flush_buffer()
+                in_code_block = True
+            continue
+        if in_code_block:
+            code_block_lines.append(line)
+            continue
+
+        # ── Table accumulation ───────────────────
+        if TABLE_ROW_RE.match(line):
+            if not table_rows:
+                flush_buffer()
+            table_rows.append(line)
+            last_was_heading = False
+            continue
+        elif table_rows:
+            flush_table()
+
+        # ── Headings ─────────────────────────────
         m = HEADING_RE.match(line)
         if m:
             flush_buffer()
@@ -520,15 +745,41 @@ def convert_markdown_to_docx(md_path: Path, docx_path: Path, lang: str = "es") -
                 insert_document_title(doc, heading_text, lang=lang)
                 title_written = True
             else:
-                reduce_spacing_before_heading(doc)
+                if last_was_heading:
+                    # Consecutive headings → reduce gap between them
+                    prev_p = doc.paragraphs[-1]
+                    prev_p.paragraph_format.space_after = Pt(4)
+                else:
+                    reduce_spacing_before_heading(doc)
                 insert_heading(doc, heading_text, md_level=level, lang=lang)
+                if last_was_heading:
+                    # Also reduce space_before on this new heading
+                    doc.paragraphs[-1].paragraph_format.space_before = Pt(6)
+            last_was_heading = True
             continue
 
+        last_was_heading = False
+
+        # ── Blank lines ──────────────────────────
         if line.strip() == "":
             flush_buffer()
+            last_element_type = 'NORMAL'
             continue
 
-        # LIST DETECTION
+        # ── Blockquotes ──────────────────────────
+        bq = BLOCKQUOTE_RE.match(line)
+        if bq:
+            flush_buffer()
+            insert_blockquote(doc, bq.group(1), lang=lang)
+            continue
+
+        # ── Horizontal rule ──────────────────────
+        if re.match(r"^\s*(---|\*\*\*)\s*$", line):
+            flush_buffer()
+            buffer.append(line)
+            continue
+
+        # ── LIST DETECTION ───────────────────────
         raw = line.rstrip("\n")
         leading = len(raw) - len(raw.lstrip(" \t"))
         leading_spaces = raw[:leading].replace("\t", " " * 4)
@@ -545,6 +796,8 @@ def convert_markdown_to_docx(md_path: Path, docx_path: Path, lang: str = "es") -
             reduce_spacing_before_list(doc, pt=0)
             content = m_num.group(2).strip()
             insert_numbered_item(doc, content, level=level, lang=lang)
+            last_element_type = 'LIST'
+            last_list_level = level
             continue
 
         # Alphabetic list (e.g., A) or b.)
@@ -555,6 +808,8 @@ def convert_markdown_to_docx(md_path: Path, docx_path: Path, lang: str = "es") -
             label = m_alpha.group(1) + m_alpha.group(2)
             content = m_alpha.group(3).strip()
             insert_alphabetic_item(doc, label, content, level=level, lang=lang)
+            last_element_type = 'LIST'
+            last_list_level = level
             continue
 
         # Bullet list
@@ -571,10 +826,29 @@ def convert_markdown_to_docx(md_path: Path, docx_path: Path, lang: str = "es") -
                     insert_bullet_item(doc, part, level=level, lang=lang)
             else:
                 insert_bullet_item(doc, content, level=level, lang=lang)
+            last_element_type = 'LIST'
+            last_list_level = level
             continue
 
+        # Check for list continuation (indented paragraph)
+        if last_element_type in ('LIST', 'BULLET_CONT') and (line.startswith("  ") or line.startswith("\t")):
+            if last_element_type == 'LIST':
+                # Starting a new continuation paragraph for the current list item
+                last_element_type = 'BULLET_CONT'
+            buffer.append(line)
+            continue
+            
+        if last_element_type == 'BULLET_CONT':
+            flush_buffer()
+
+        last_element_type = 'NORMAL'
         buffer.append(line)
 
+    # Final flushes
+    if in_code_block:
+        flush_code_block()
+    if table_rows:
+        flush_table()
     flush_buffer()
     doc.save(docx_path)
 

@@ -36,7 +36,7 @@ from pathlib import Path
 import requests
 from dotenv import load_dotenv
 
-from translators import get_translator, LANG_MAP, DEFAULT_LANGS
+from translators import get_translator, LANG_MAP, DEFAULT_LANGS, TranslationError
 
 class Spinner:
     def __init__(self, message: str):
@@ -73,6 +73,7 @@ load_dotenv()
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SOURCES_DIR = PROJECT_ROOT / "sources"
 TRANSLATED_DIR = PROJECT_ROOT / "translated"
+DRIVE_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID", "").strip()
 
 
 # ═══════════════════════════════════════════
@@ -210,7 +211,7 @@ def convert_docx_to_pdf(docx_file: Path) -> None:
 # Pipeline orchestration
 # ═══════════════════════════════════════════
 
-def process_source_file(md_path: Path, langs: list[str], translator, use_google: bool = False, no_local: bool = False) -> None:
+def process_source_file(md_path: Path, langs: list[str], translator, use_google: bool = False, no_local: bool = False, folder: str | None = None) -> None:
     """Translate one .md file and generate DOCX + PDF (local) or upload to Google Docs.
 
     Output goes to translated/<lang>/<lang>.md, .docx, .pdf
@@ -224,6 +225,9 @@ def process_source_file(md_path: Path, langs: list[str], translator, use_google:
             print(f"ERROR: Google Docs Auth failed: {e}", file=sys.stderr)
             print("Please ensure credentials.json is present in the project root.", file=sys.stderr)
             sys.exit(1)
+
+    # Resolve Drive destination folder
+    folder_id = folder or DRIVE_FOLDER_ID or None
 
     lines = md_path.read_text(encoding="utf-8").splitlines()
     parsed = parse_markdown_lines(lines)
@@ -241,17 +245,17 @@ def process_source_file(md_path: Path, langs: list[str], translator, use_google:
         es_folder.mkdir(parents=True, exist_ok=True)
         es_file = es_folder / "es.md"
         shutil.copy2(md_path, es_file)
-        print(f"  ▸ {md_path.stem} (ES) → {es_file.relative_to(PROJECT_ROOT)}")
+        print(f"  ▸ Processing: {md_path.name} (Original ES) → {es_file.relative_to(PROJECT_ROOT)}")
         docx_file = generate_docx_document(es_file, "es")
         convert_docx_to_pdf(docx_file)
     else:
-        print(f"  ▸ {md_path.stem} (ES)")
+        print(f"  ▸ Processing: {md_path.name} (Original ES)")
 
     if g_manager:
         spinner = Spinner("      ☁️  Uploading to Google Drive...")
         spinner.start()
         try:
-            doc_id = g_manager.create_document(f"ES - {md_path.stem}")
+            doc_id = g_manager.create_document(title=md_path.stem, folder_id=folder_id, lang="es")
             # Setup layout: Header with image + Footer with page numbers
             header_img = PROJECT_ROOT / "public" / "header.png"
             g_manager.setup_document_layout(doc_id, header_image_path=header_img, is_rtl=False)
@@ -268,8 +272,10 @@ def process_source_file(md_path: Path, langs: list[str], translator, use_google:
     # 2. Translate to each target language
     for lang_code in langs:
         short = LANG_MAP.get(lang_code, lang_code.lower().split("-")[0])
+        from google_docs_manager import LANG_NAMES
+        lang_display_name = LANG_NAMES.get(short.lower(), short).upper()
         
-        spinner = Spinner(f"  ▸ Translating to {short.upper()} ({lang_code})…")
+        spinner = Spinner(f"  ▸ Translating to {lang_display_name} ({short.upper()})…")
         spinner.start()
         try:
             translated = translator.translate(texts_to_translate, lang_code)
@@ -295,7 +301,7 @@ def process_source_file(md_path: Path, langs: list[str], translator, use_google:
             spinner = Spinner("      ☁️  Uploading to Google Drive...")
             spinner.start()
             try:
-                doc_id = g_manager.create_document(f"{short.upper()} - {md_path.stem}")
+                doc_id = g_manager.create_document(title=md_path.stem, folder_id=folder_id, lang=short)
                 # Setup layout: Header with image + Footer with page numbers
                 header_img = PROJECT_ROOT / "public" / "header.png"
                 is_rtl = short in ["ar", "he", "fa", "ur"]
@@ -318,44 +324,64 @@ def process_source_file(md_path: Path, langs: list[str], translator, use_google:
 
 def main() -> None:
     ap = argparse.ArgumentParser(
-        description="Translate Markdown files via selected provider and generate DOCX + PDF."
+        description="Translate Markdown files and generate DOCX + PDF documents."
     )
     ap.add_argument(
         "md",
         type=Path,
         nargs="?",
         default=None,
-        help="Specific .md file (if omitted, processes all files in sources/)",
+        help="Markdown source file. If omitted, processes all .md in sources/.",
     )
     ap.add_argument(
-        "--langs",
+        "-l", "--languages", "--langs",
         nargs="+",
         default=DEFAULT_LANGS,
-        help=f"Target language codes (default: {' '.join(DEFAULT_LANGS)})",
+        dest="langs",
+        help=f"Target language codes, e.g. EN-GB FR AR ZH (default: {' '.join(DEFAULT_LANGS)})",
     )
     ap.add_argument(
-        "--provider",
-        choices=["deepl", "azure"],
-        default="deepl",
-        help="Translation provider to use (default: deepl)",
+        "-p", "--provider", "--api",
+        choices=["deepl", "azure", "auto"],
+        default="auto",
+        help="Translation provider. 'auto' tries all configured providers with fallback (default: auto)",
     )
     ap.add_argument(
-        "--google",
+        "-d", "--drive", "--google",
         action="store_true",
-        help="Upload translated documents directly to Google Docs",
+        dest="google",
+        help="Upload translated documents to Google Drive",
     )
     ap.add_argument(
-        "--no-local",
+        "-c", "--cloud-only", "--no-local",
         action="store_true",
-        help="Skip generating local DOCX and PDF (useful if using Google Docs output instead)",
+        dest="no_local",
+        help="Skip local DOCX/PDF generation (use with --drive)",
+    )
+    ap.add_argument(
+        "-o", "--output",
+        type=Path,
+        default=None,
+        help="Custom output directory (default: translated/)",
+    )
+    ap.add_argument(
+        "-f", "--folder",
+        type=str,
+        default=None,
+        help="Target Google Drive Folder ID (overrides .env GOOGLE_DRIVE_FOLDER_ID)",
     )
     args = ap.parse_args()
+
+    # Custom output dir
+    global TRANSLATED_DIR
+    if args.output:
+        TRANSLATED_DIR = args.output.expanduser().resolve()
 
     # Initialize translator
     try:
         translator = get_translator(args.provider)
-    except Exception as e:
-        print(f"ERROR: Failed to initialize translator: {e}", file=sys.stderr)
+    except (TranslationError, ValueError) as e:
+        print(f"ERROR: {e}", file=sys.stderr)
         sys.exit(1)
 
     # Determine which files to process
@@ -378,7 +404,7 @@ def main() -> None:
         print(f"\n{'='*60}")
         print(f"  File: {md_path.name}")
         print(f"{'='*60}")
-        process_source_file(md_path, args.langs, translator, use_google=args.google, no_local=args.no_local)
+        process_source_file(md_path, args.langs, translator, use_google=args.google, no_local=args.no_local, folder=args.folder)
 
     if args.no_local and args.google:
         print(f"\n✓ Pipeline complete. Documents uploaded to Google Drive.")
@@ -390,7 +416,8 @@ def main() -> None:
     if getattr(process_source_file, "generated_links", None):
         print("\nGoogle Docs Links:")
         for lang, link in process_source_file.generated_links.items():
-            print(f"  [{lang.upper()}] \033]8;;{link}\033\\{link}\033]8;;\033\\")
+            lang_label = lang.upper()
+            print(f"  [✓] {lang_label}: {link}")
 
 
 if __name__ == "__main__":

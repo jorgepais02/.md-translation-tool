@@ -12,6 +12,7 @@ BLUE='\033[1;34m'
 GREEN='\033[1;32m'
 YELLOW='\033[1;33m'
 RED='\033[1;31m'
+DIM='\033[2m'
 NC='\033[0m' # No Color
 
 echo -e "${BLUE}==============================================${NC}"
@@ -35,13 +36,16 @@ echo -e "\n${GREEN}File selected:${NC} $MD_FILE"
 
 # 1. Select Provider
 echo -e "\n${YELLOW}Which translation provider would you like to use?${NC}"
-echo "  1) DeepL API (Default)"
-echo "  2) Azure AI Translator"
-read -p "Select [1-2] (default: 1): " PROVIDER_CHOICE
+echo "  1) Auto — uses all available APIs with automatic fallback (Recommended)"
+echo "  2) DeepL API"
+echo "  3) Azure AI Translator"
+echo ""
+read -p "Select [1-3] (default: 1): " PROVIDER_CHOICE
 
 case "$PROVIDER_CHOICE" in
-  2) PROVIDER="azure" ;;
-  *) PROVIDER="deepl" ;;
+  2) PROVIDER="deepl" ;;
+  3) PROVIDER="azure" ;;
+  *) PROVIDER="auto" ;;
 esac
 echo -e "Provider set to: ${GREEN}$PROVIDER${NC}"
 
@@ -50,32 +54,36 @@ echo -e "\n${YELLOW}Where do you want to generate the documents?${NC}"
 echo "  1) Local only (.docx and .pdf)"
 echo "  2) Google Drive only (Google Docs layout with perfect RTL)"
 echo "  3) Both Local and Google Drive"
+echo ""
 read -p "Select [1-3] (default: 3): " DRIVE_CHOICE
 
-USE_GOOGLE=""
+DRIVE_FLAG=""
 case "$DRIVE_CHOICE" in
-  1) USE_GOOGLE="" ;;
-  2) USE_GOOGLE="--google --no-local" ;; # We will add a flag to skip local later if implemented, for now it's just --google
-  *) USE_GOOGLE="--google" ;;
+  1) DRIVE_FLAG="" ;;
+  2) DRIVE_FLAG="--drive --cloud-only" ;;
+  *) DRIVE_FLAG="--drive" ;;
 esac
-echo -e "Google Drive generation: ${GREEN:-$(if [ -z "$USE_GOOGLE" ]; then echo "OFF"; else echo "ON"; fi)}${NC}"
+
+echo -e "Google Drive generation: ${GREEN}$(if [ "$DRIVE_CHOICE" = "1" ]; then echo "OFF"; else echo "ON"; fi)${NC}"
 
 # 3. Select Languages
-echo -e "\n${YELLOW}Enter the target language codes separated by space (e.g., EN FR AR ZH).${NC}"
-echo -e "Leave empty for default (EN FR AR ZH)."
+echo -e "\n${YELLOW}Enter Target Language Codes separated by space:${NC}"
+echo -e "  ${DIM}Supports ANY ISO code. Common examples: EN, FR, AR, ZH${NC}"
+echo -e "  ${DIM}Leave empty to apply defaults (EN FR AR ZH).${NC}"
+echo ""
 read -p "> " LANGS_INPUT
 
 if [ -z "$LANGS_INPUT" ]; then
-  LANGS="EN FR AR ZH"
+  LANGS="EN-GB FR AR ZH"
 else
   LANGS="$LANGS_INPUT"
 fi
 echo -e "Target languages: ${GREEN}$LANGS${NC}"
 
 # Confirm and Run
-echo -e "\n${BLUE}==============================================${NC}"
+echo -e "\n\n${BLUE}==============================================${NC}"
 echo "Starting Translation Pipeline..."
-echo -e "${BLUE}==============================================${NC}\n"
+echo -e "${BLUE}==============================================${NC}"
 
 # Verify virtual environment exists
 if [ ! -d "$SCRIPT_DIR/.venv" ]; then
@@ -87,12 +95,11 @@ fi
 source "$SCRIPT_DIR/.venv/bin/activate"
 
 # Build command dynamically
-CMD="python \"$SCRIPT_DIR/src/translation_pipeline.py\" \"$MD_FILE\" --provider \"$PROVIDER\" --langs $LANGS"
-if [ -n "$USE_GOOGLE" ]; then
-  CMD="$CMD $USE_GOOGLE"
+CMD="python \"$SCRIPT_DIR/src/translation_pipeline.py\" \"$MD_FILE\" --provider \"$PROVIDER\" -l $LANGS"
+if [ -n "$DRIVE_FLAG" ]; then
+  CMD="$CMD $DRIVE_FLAG"
 fi
 
-echo -e "${YELLOW}Executing:${NC} $CMD\n"
 eval $CMD
 
 echo -e "\n${GREEN}Pipeline finished successfully!${NC}"

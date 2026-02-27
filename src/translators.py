@@ -12,6 +12,11 @@ LANG_MAP = {
 }
 DEFAULT_LANGS = list(LANG_MAP.keys())
 
+
+class TranslationError(Exception):
+    """Raised when a translation provider fails."""
+    pass
+
 class BaseTranslator(ABC):
     """Abstract base class for all translation providers."""
     
@@ -35,8 +40,7 @@ class DeepLTranslator(BaseTranslator):
     def __init__(self, api_key: str | None = None):
         self.api_key = api_key or os.getenv("DEEPL_API_KEY", "")
         if not self.api_key:
-            print("ERROR: DEEPL_API_KEY not found in .env", file=sys.stderr)
-            sys.exit(1)
+            raise TranslationError("DEEPL_API_KEY not found in .env")
             
         # Keys ending in ":fx" belong to the free plan → api-free.deepl.com
         if self.api_key.endswith(":fx"):
@@ -68,16 +72,14 @@ class DeepLTranslator(BaseTranslator):
             try:
                 resp = requests.post(self.translate_url, json=payload, headers=headers, timeout=60)
                 if resp.status_code == 456:
-                    print("ERROR: DeepL quota exceeded.", file=sys.stderr)
-                    sys.exit(1)
+                    raise TranslationError("DeepL quota exceeded.")
                 resp.raise_for_status()
                 data = resp.json()
 
                 for item in data["translations"]:
                     results.append(item["text"])
             except requests.exceptions.RequestException as e:
-                print(f"ERROR: DeepL API request failed: {e}", file=sys.stderr)
-                sys.exit(1)
+                raise TranslationError(f"DeepL API request failed: {e}") from e
 
         return results
 
@@ -89,8 +91,7 @@ class AzureTranslator(BaseTranslator):
         self.region = region or os.getenv("AZURE_TRANSLATOR_REGION", "")
         
         if not self.api_key:
-            print("ERROR: AZURE_TRANSLATOR_KEY not found in .env", file=sys.stderr)
-            sys.exit(1)
+            raise TranslationError("AZURE_TRANSLATOR_KEY not found in .env")
             
         # Text Translation API v3.0
         self.base_url = "https://api.cognitive.microsofttranslator.com"
@@ -134,28 +135,79 @@ class AzureTranslator(BaseTranslator):
 
             try:
                 resp = requests.post(self.translate_url, params=params, json=payload, headers=headers, timeout=60)
-                if resp.status_code == 403: # Or 429 for Quota/Rate limit usually
-                     print(f"ERROR: Azure API Error ({resp.status_code}). Check your tier quota or valid region.", file=sys.stderr)
-                     if "out of call volume quota" in resp.text.lower():
-                          print("Specific Error: Quota exceeded.", file=sys.stderr)
-                     sys.exit(1)
+                if resp.status_code == 403:
+                    msg = f"Azure API Error ({resp.status_code}). Check your tier quota or valid region."
+                    if "out of call volume quota" in resp.text.lower():
+                        msg += " Quota exceeded."
+                    raise TranslationError(msg)
                 resp.raise_for_status()
                 data = resp.json()
 
                 for item in data:
                     results.append(item["translations"][0]["text"])
             except requests.exceptions.RequestException as e:
-                print(f"ERROR: Azure API request failed: {e}", file=sys.stderr)
-                if hasattr(e.response, 'text'):
-                     print(f"Response details: {e.response.text}", file=sys.stderr)
-                sys.exit(1)
+                detail = ""
+                if hasattr(e, 'response') and e.response is not None and hasattr(e.response, 'text'):
+                    detail = f" — {e.response.text}"
+                raise TranslationError(f"Azure API request failed: {e}{detail}") from e
 
         return results
 
 
+class FallbackTranslator(BaseTranslator):
+    """Translator that tries multiple providers in order, falling back on failure."""
+
+    def __init__(self, translators: list[BaseTranslator]):
+        if not translators:
+            raise ValueError("FallbackTranslator requires at least one translator.")
+        self.translators = translators
+
+    def translate(self, texts: list[str], target_lang: str) -> list[str]:
+        errors: list[str] = []
+        for t in self.translators:
+            try:
+                return t.translate(texts, target_lang)
+            except TranslationError as e:
+                name = type(t).__name__
+                print(f"  ⚠ {name} failed: {e}  — trying next provider…", file=sys.stderr)
+                errors.append(f"{name}: {e}")
+        raise TranslationError(
+            "All translation providers failed:\n  " + "\n  ".join(errors)
+        )
+
+
 def get_translator(provider: str) -> BaseTranslator:
-    """Factory to return the correctly configured translator."""
+    """Factory to return the correctly configured translator.
+
+    If *provider* is ``'auto'``, builds a :class:`FallbackTranslator` using
+    every provider whose API key is present in the environment (DeepL first,
+    then Azure).  Falls back gracefully when only one key is available.
+    """
     provider = provider.lower()
+
+    if provider == "auto":
+        translators: list[BaseTranslator] = []
+        # Try DeepL first
+        if os.getenv("DEEPL_API_KEY", ""):
+            try:
+                translators.append(DeepLTranslator())
+            except TranslationError:
+                pass
+        # Then Azure
+        if os.getenv("AZURE_TRANSLATOR_KEY", ""):
+            try:
+                translators.append(AzureTranslator())
+            except TranslationError:
+                pass
+        if not translators:
+            raise TranslationError(
+                "No translation provider configured. "
+                "Set DEEPL_API_KEY or AZURE_TRANSLATOR_KEY in your .env file."
+            )
+        if len(translators) == 1:
+            return translators[0]
+        return FallbackTranslator(translators)
+
     if provider == "deepl":
         return DeepLTranslator()
     elif provider == "azure":
