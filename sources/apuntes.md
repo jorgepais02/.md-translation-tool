@@ -1,152 +1,47 @@
-# DAOs: El advenimiento de la democracia real (II)
+# La Amenaza Cuántica
 
-## Tipologías de DAOs
+La criptografía es la capa invisible que sustenta la seguridad en internet, permitiendo transacciones y comunicaciones privadas mediante barreras matemáticas.
 
-No existe una clasificación oficial de organizaciones autónomas descentralizadas. Sin embargo, pueden agruparse según sus características y aplicaciones.
+## Protección de la Información
 
-En la mayoría de las DAOs existe un token nativo que concede poder de voto. El peso del voto suele depender de la cantidad de tokens que posee cada participante.
+La información se protege mediante dos familias principales de criptografía:
 
-### Protocol DAOs
+*   **Criptografía simétrica:** Utiliza una única clave compartida por ambas partes, similar a una caja fuerte con una sola llave.
+*   **Criptografía de clave pública (asimétrica):** Cada persona posee dos claves: una pública (compartida) y una privada (secreta). Esto permite establecer comunicaciones seguras entre partes que no se conocen previamente.
 
-En este tipo de organizaciones, los tokens se utilizan para votar cambios en el funcionamiento de un protocolo blockchain.
+## Fundamentos Matemáticos de la Criptografía de Clave Pública
 
-Ejemplos destacados:
+La seguridad de la criptografía de clave pública se basa en problemas matemáticos que son computacionalmente fáciles en una dirección, pero extremadamente difíciles de revertir para los ordenadores clásicos. Ejemplos incluyen:
 
-- MakerDAO, creadora de la stablecoin DAI respaldada por criptomonedas.
-- Uniswap, un exchange descentralizado donde la comunidad decide sobre los pools de liquidez y otros parámetros del sistema.
+*   **Multiplicación y factorización:** Multiplicar números grandes es sencillo, pero factorizar el resultado para obtener los números originales es casi imposible. Este principio es la base del algoritmo RSA.
+*   **Logaritmo discreto:** Se apoya en la aritmética modular y es fundamental en protocolos como Diffie-Hellman.
+*   **Curvas elípticas:** Permiten operaciones de inversión rápidas, ofreciendo alta seguridad con claves de menor tamaño y siendo ampliamente utilizadas en la actualidad.
 
-### Investment DAOs
+## La Computación Cuántica
 
-También denominadas Venture DAOs, se orientan a la inversión colectiva en proyectos de finanzas descentralizadas y otros mercados digitales.
+La dificultad de estos problemas matemáticos es relativa al tipo de ordenador utilizado.
 
-Permiten reunir capital entre múltiples participantes y tomar decisiones de inversión de forma colectiva.
+### Diferencia entre Ordenadores Clásicos y Cuánticos
 
-Estas estructuras eliminan figuras tradicionales como gestores, auditores o depositarios, ya que la información y las operaciones se registran directamente en el código.
+*   **Ordenadores clásicos:** Operan con bits (0 o 1).
+*   **Ordenadores cuánticos:** Utilizan cúbits, que pueden representar combinaciones de estados simultáneamente y aprovechan propiedades físicas como la interferencia para amplificar las respuestas correctas. No son simplemente más rápidos, sino que emplean un modelo de cálculo distinto que altera la complejidad de ciertas categorías de problemas.
 
-Ejemplo:
+### El Algoritmo de Shor
 
-- Metacart Ventures.
+En la década de 1990, se demostró teóricamente que un ordenador cuántico suficientemente potente podría resolver los problemas matemáticos que sustentan la criptografía de clave pública de manera eficiente mediante el algoritmo de Shor. Esto implica que la suposición de la imposibilidad de resolver estos problemas depende del uso de la computación clásica; un cambio en el modelo de computación modifica su dificultad.
 
-### Collector DAOs
+La computación cuántica no representa un "atacante mejor", sino una categoría de capacidad computacional diferente que invalida los fundamentos actuales del sistema de confianza en internet.
 
-Se centran en la adquisición y gestión de arte digital, especialmente NFTs.
+## Consecuencias de la Amenaza Cuántica
 
-Permiten que múltiples participantes inviertan conjuntamente en obras digitales o activos culturales.
+La amenaza cuántica no requiere que la capacidad de computación cuántica esté disponible de inmediato para tener implicaciones actuales.
 
-Este modelo reduce la barrera de entrada para inversores que no podrían adquirir obras de alto valor de forma individual.
+### El Riesgo de "Almacenar Ahora, Descifrar Después"
 
-Ejemplos:
+La información cifrada interceptada hoy puede ser almacenada por organizaciones o gobiernos con la intención de descifrarla en el futuro (10 o 20 años) cuando la computación cuántica sea una realidad. Este riesgo es particularmente relevante para datos con una vida útil prolongada, como información médica o financiera.
 
-- Flamingo
-- PleasrDAO
-- Squiggle DAO
+El riesgo comienza en el momento en que el dato es capturado, haciendo que la amenaza cuántica sea acumulativa y no instantánea.
 
-### Service DAOs
+### Vida Útil del Dato vs. Vida Útil del Algoritmo
 
-Funcionan como agregadores de talento en forma de equipos de trabajo descentralizados.
-
-Los miembros colaboran en proyectos técnicos o creativos y reciben tokens como compensación por sus contribuciones.
-
-En algunos casos se plantea que estas organizaciones puedan sustituir a ciertos modelos tradicionales de intermediación laboral.
-
-Ejemplos:
-
-- Raid Guild
-- DXdao
-- PartyDAO
-
-### Social DAOs
-
-Agrupan comunidades que comparten intereses, valores o actividades comunes.
-
-La gobernanza se realiza de forma colectiva mediante votaciones de los miembros.
-
-Ejemplos:
-
-- Friends with Benefits
-- Seed Club
-- Cabin
-
-### Grants o Charity DAOs
-
-Se orientan a financiar proyectos o iniciativas sociales mediante mecanismos de financiación colectiva.
-
-La asignación de fondos se decide mediante votaciones de la comunidad, lo que proporciona un alto nivel de transparencia sobre el destino de los recursos.
-
-Ejemplos:
-
-- MolochDAO
-- iniciativas benéficas vinculadas a Uniswap, Aave o Compound.
-
-### Entertainment DAOs
-
-Permiten que los miembros participen en decisiones creativas relacionadas con proyectos culturales o de entretenimiento.
-
-Los participantes pueden influir en aspectos como el desarrollo narrativo, personajes o estrategias del proyecto.
-
-Un ejemplo conocido es Bored Ape Yacht Club, donde la posesión de determinados NFTs concede derechos de participación en decisiones creativas.
-
-### Media DAOs
-
-Se centran en la producción de contenidos digitales gestionados por la comunidad.
-
-Los creadores reciben tokens por la generación de contenido, mientras que la comunidad vota qué contenidos deben ser recompensados.
-
-Ejemplos:
-
-- Forefront
-- Darkstar DAO
-
-### Plataformas para crear DAOs
-
-Existen proyectos que ofrecen herramientas para crear y gestionar DAOs sin necesidad de conocimientos avanzados de programación.
-
-Ejemplos:
-
-- Aragon
-- Colony
-- Orca
-
-## Caso histórico: The DAO (2016)
-
-Uno de los episodios más relevantes en la historia de las DAOs ocurrió en 2016 con el proyecto conocido como The DAO.
-
-Este proyecto de inversión basado en Ethereum fue lanzado por Simon y Christoph Jentzsch y logró recaudar aproximadamente 150 millones de dólares de unos 11.000 inversores.
-
-### Vulnerabilidad del contrato inteligente
-
-En junio de 2016 se descubrió una vulnerabilidad en el contrato inteligente del proyecto.
-
-Un atacante explotó este fallo para transferir progresivamente alrededor de 50 millones de dólares hacia una cuenta bajo su control.
-
-### Debate filosófico
-
-El incidente generó un intenso debate en la comunidad blockchain sobre el principio conocido como "el código es la ley".
-
-Según esta idea, si el comportamiento estaba permitido por el código del contrato inteligente, no se trataría estrictamente de un robo.
-
-El atacante argumentó que las reglas del sistema permitían esa operación y que la naturaleza inmutable de la blockchain impedía revertirla.
-
-### Intervención de la comunidad
-
-El contrato inteligente incluía un periodo de bloqueo de 28 días para retirar los fondos, lo que dio tiempo a la comunidad para analizar posibles soluciones.
-
-Un grupo de hackers éticos denominado Robin Hood Group utilizó la misma vulnerabilidad para recuperar una gran parte de los fondos restantes y protegerlos en una nueva DAO.
-
-### Hard fork de Ethereum
-
-La comunidad de Ethereum se dividió entre dos posiciones.
-
-Algunos miembros defendían no intervenir para preservar el principio de inmutabilidad de la blockchain.
-
-Otros consideraban necesario intervenir para recuperar los fondos sustraídos.
-
-Finalmente, tras una votación en la que aproximadamente el 97 % se mostró a favor, se ejecutó un hard fork el 20 de julio de 2016.
-
-Este cambio permitió revertir las transacciones asociadas al ataque.
-
-La cadena resultante se convirtió en la actual red Ethereum, mientras que la cadena original continuó existiendo bajo el nombre Ethereum Classic.
-
-### Impacto
-
-El incidente tuvo un impacto significativo en el ecosistema de criptomonedas, generando una caída aproximada del 60 % en el valor del mercado en ese momento y provocando un debate profundo sobre la gobernanza y la confianza en la tecnología blockchain.
+Aunque existe incertidumbre sobre las fechas exactas para el desarrollo de ordenadores cuánticos capaces de romper la criptografía actual, el riesgo persiste. La seguridad de un dato se define por el tiempo que necesita ser protegido. Si la vida útil de un dato es mayor que la vida útil del algoritmo que lo protege, existe un problema de seguridad. La amenaza cuántica representa un cambio de paradigma que sugiere que lo que hoy es inaccesible podría volverse información abierta si el modelo de computación evoluciona.

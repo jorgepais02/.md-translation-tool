@@ -24,6 +24,6 @@ config.json
 translated/
 
 # Output
-sources/apuntes.md
+sources/*
 
 

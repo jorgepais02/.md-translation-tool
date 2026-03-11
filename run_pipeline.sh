@@ -34,50 +34,74 @@ fi
 
 echo -e "\n${GREEN}File selected:${NC} $MD_FILE"
 
-# 1. Select Provider
-AVAILABLE_JSON=$(python3 src/translators.py)
-PROVIDER_SELECTION=$(python3 -c "
-import sys, json
-
-try:
-    data = json.loads(sys.argv[1])
-except Exception:
-    data = []
-
-if not data:
-    print('\033[0;31mERROR: No translators configured in .env\033[0m', file=sys.stderr)
-    sys.exit(1)
-
-print('\n\033[1;33mWhich translation provider would you like to prioritize?\033[0m', file=sys.stderr)
-for i, t in enumerate(data, 1):
-    others = [x['name'] for x in data if x['id'] != t['id']]
-    fallback_str = (' (Auto-falls back to ' + ', '.join(others) + ' if needed)') if others else ''
-    print(f'  {i}) {t[\"name\"]}{fallback_str}', file=sys.stderr)
-
-print('', file=sys.stderr)
-try:
-    choice_str = input(f'Select [1-{len(data)}] (default: 1): ')
-except BaseException:
-    choice_str = ''
-
-try:
-    choice_idx = int(choice_str) - 1
-    if choice_idx < 0 or choice_idx >= len(data):
-        choice_idx = 0
-except ValueError:
-    choice_idx = 0
-
-print(data[choice_idx]['id'])
-" "$AVAILABLE_JSON")
-
-if [ $? -ne 0 ]; then
-    exit 1
+# 1. Provide Context & Auto-formatting
+if [[ "$MD_FILE" == *.txt ]]; then
+  echo -e "\n${YELLOW}It looks like you provided a raw text file (.txt).${NC}"
+  echo "Would you like to use Gemini AI to format it into clean, structured Markdown automatically?"
+  echo "  1) Yes, format it (Requires GEMINI_API_KEY in .env)"
+  echo "  2) No, use it as is"
+  echo ""
+  read -p "Select [1-2] (default: 1): " FORMAT_CHOICE
+  
+  if [ "$FORMAT_CHOICE" != "2" ]; then
+    echo -e "\n${BLUE}==============================================${NC}"
+    echo "Formatting text with Gemini AI..."
+    echo -e "${BLUE}==============================================${NC}"
+    
+    # Needs virtual environment
+    if [ ! -d "$SCRIPT_DIR/.venv" ]; then
+      echo -e "${RED}ERROR: Virtual environment not found. Please setup the project first.${NC}"
+      exit 1
+    fi
+    source "$SCRIPT_DIR/.venv/bin/activate"
+    
+    if python "$SCRIPT_DIR/src/generate_markdown.py" "$MD_FILE"; then
+      MD_FILE="${MD_FILE%.*}.md"
+      echo -e "${GREEN}Successfully formatted. New source file:${NC} $MD_FILE"
+    else
+      echo -e "\n${RED}Formatting failed. Continuing with original file...${NC}"
+    fi
+  fi
 fi
 
-PROVIDER="$PROVIDER_SELECTION"
+# 2. Select Provider
+AVAILABLE_JSON=$(python3 src/translators.py)
+
+# Parse translators and display options
+echo -e "\n${YELLOW}Which translation provider would you like to prioritize?${NC}"
+python3 -c "
+import sys, json
+try:
+    data = json.loads(sys.argv[1])
+    if not data: sys.exit(1)
+    for i, t in enumerate(data, 1):
+        others = [x['name'] for x in data if x['id'] != t['id']]
+        fallback_str = (' (Auto-falls back to ' + ', '.join(others) + ' if needed)') if others else ''
+        print(f'  {i}) {t[\"name\"]}{fallback_str}')
+except Exception:
+    sys.exit(1)
+" "$AVAILABLE_JSON" || { echo -e "${RED}ERROR: No translators configured in .env${NC}"; exit 1; }
+
+echo ""
+# Get the max number of options
+OPT_COUNT=$(echo "$AVAILABLE_JSON" | grep -o '\"id\"' | wc -l | tr -d ' ')
+read -p "Select [1-$OPT_COUNT] (default: 1): " PROVIDER_CHOICE
+
+# Get id based on choice 
+PROVIDER=$(python3 -c "
+import sys, json
+try:
+    data = json.loads(sys.argv[1])
+    idx = int(sys.argv[2]) - 1 if sys.argv[2] else 0
+    if idx < 0 or idx >= len(data): idx = 0
+    print(data[idx]['id'])
+except Exception:
+    print('azure') # solid fallback
+" "$AVAILABLE_JSON" "$PROVIDER_CHOICE")
+
 echo -e "Provider set to: ${GREEN}$PROVIDER${NC}"
 
-# 2. Select Output Mode
+# 3. Select Output Mode
 echo -e "\n${YELLOW}Where do you want to generate the documents?${NC}"
 echo "  1) Local only"
 echo "  2) Google Drive only"
@@ -94,7 +118,7 @@ esac
 
 echo -e "Google Drive generation: ${GREEN}$(if [ "$DRIVE_CHOICE" = "1" ]; then echo "OFF"; else echo "ON"; fi)${NC}"
 
-# 3. Select Languages
+# 4. Select Languages
 # Read defaults from config.json
 CONFIG_FILE="$SCRIPT_DIR/config.json"
 if [ ! -f "$CONFIG_FILE" ]; then

@@ -207,7 +207,11 @@ def get_translator(fallback_order: list[str] | str) -> BaseTranslator:
             _, cls = AVAILABLE_TRANSLATORS[provider_id]
             try:
                 translators.append(cls())
-            except TranslationError:
+            except TranslationError as e:
+                # If this is the primary requested provider, we should fail loudly
+                # instead of silently ignoring it and trying the next one.
+                if provider_id == fallback_order[0].lower():
+                    raise TranslationError(f"Failed to initialize requested provider '{provider_id}': {e}")
                 pass
                 
     # Append any available providers that weren't explicitly requested

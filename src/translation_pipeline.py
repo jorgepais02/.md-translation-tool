@@ -38,6 +38,7 @@ import requests
 from dotenv import load_dotenv
 
 from translators import get_translator, TranslationError
+from ai_refiner import refine_translation
 
 
 class Spinner:
@@ -314,6 +315,18 @@ def process_source_file(md_path: Path, langs: list[str], translator, use_google:
             print(f"      Error: {e}")
             success = False
             continue
+
+        # AI Refinement for specific languages
+        needs_refinement = short in ['ar', 'zh', 'ja', 'ko', 'fa', 'he', 'ur']
+        if needs_refinement:
+            spinner = Spinner(f"  ▸ Refining {lang_display_name} translation with Gemini…")
+            spinner.start()
+            try:
+                rebuilt = refine_translation(rebuilt, lang_code)
+                spinner.stop("✓")
+            except Exception as e:
+                spinner.stop("❌")
+                print(f"      Refinement Error: {e} (Using unrefined text)")
 
         # Local output
         if not no_local:
