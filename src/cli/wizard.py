@@ -1,104 +1,146 @@
+import sys
 import questionary
 from pathlib import Path
-from .styles import console, WIZARD_STYLE
+from rich.text import Text
+from .styles import console, WIZARD_STYLE, LANGUAGES, GREEN, BLUE, DIM, FG, BRIGHT
 
-def run_wizard(preselected_source: str = None) -> dict:
-    console.print("[bold]mdtranslator[/bold] [dim]v2.1.0[/dim]\n")
+VERSION = "2.1.0"
 
-    base_dir = Path(__file__).resolve().parent.parent.parent
+def _ask(fn):
+    try:
+        return fn()
+    except KeyboardInterrupt:
+        return None
+
+def _print_select(label: str, choices: list[str], selected: str):
+    """Print a completed select block — label + all options, selected in green."""
+    console.print(f"[{FG}]{label}[/{FG}]")
+    for c in choices:
+        if c == selected:
+            console.print(f"  [bold {GREEN}]❯ {c}[/bold {GREEN}]")
+        else:
+            console.print(f"  [{DIM}]  {c}[/{DIM}]")
+    console.print()
+
+def _print_text(label: str, instruction: str, value: str):
+    """Print a completed text field — label + instruction + value in green."""
+    console.print(f"[{FG}]{label}[/{FG}]")
+    console.print(f"  [{DIM}]{instruction}[/{DIM}]")
+    console.print(f"  [bold {GREEN}]❯ {value}[/bold {GREEN}]")
+    console.print()
+
+def run_wizard(preselected_source: str = None) -> dict | None:
+    console.print(f"\n[bold white]mdtranslator[/bold white] [dim]v{VERSION}[/dim]\n")
+
+    base_dir    = Path(__file__).resolve().parent.parent.parent
     sources_dir = base_dir / "sources"
 
-    # 1. Source file
+    # ── 1. Source file ────────────────────────────────────────────────
+    source_choices = ["Process ALL files"]
+    if sources_dir.exists():
+        valid_exts = {".md", ".txt"}
+        source_choices.extend(sorted(
+            f.name for f in sources_dir.iterdir()
+            if f.is_file() and f.suffix.lower() in valid_exts
+        ))
+
     if preselected_source:
-        source = preselected_source
-        console.print(f"[green]?[/green] [bold]Select source file[/bold] [cyan]»[/cyan] {source}")
+        source = Path(preselected_source).name
     else:
-        choices = ["Process ALL files"]
-        if sources_dir.exists() and sources_dir.is_dir():
-            valid_exts = {".md", ".txt"}
-            files = [f.name for f in sources_dir.iterdir() if f.is_file() and f.suffix.lower() in valid_exts]
-            choices.extend(sorted(files))
-
-        source = questionary.select(
+        source = _ask(lambda: questionary.select(
             "Select source file",
-            choices=choices,
+            choices=source_choices,
             style=WIZARD_STYLE,
-        ).ask()
-
-    if source != "Process ALL files" and source.lower().endswith(".txt"):
-        # Resolve absolute source path
-        if sources_dir.exists():
-            source_path = (sources_dir / source).resolve()
-            if not source_path.exists():
-                # Try just the name in case it's already a partial path
-                source_path = (sources_dir / Path(source).name).resolve()
-        else:
-            source_path = Path(source).resolve()
-
-        if not source_path.exists():
-            console.print(f"\n[red]ERROR: Source file not found at {source_path}[/red]")
+            erase_when_done=True,
+        ).ask())
+        if source is None:
             return None
 
-        console.print(f"\n[yellow]It looks like you selected a raw text file ({source_path.name}).[/yellow]")
-        if questionary.confirm("Would you like to use Gemini AI to format it into clean Markdown automatically?", default=True).ask():
+    _print_select("Select source file", source_choices, source)
+
+    # ── .txt → markdown ───────────────────────────────────────────────
+    if source != "Process ALL files" and source.lower().endswith(".txt"):
+        source_path = (sources_dir / Path(source).name).resolve()
+        if not source_path.exists():
+            console.print(f"[red]✗ File not found: {source_path}[/red]")
+            return None
+
+        confirm = _ask(lambda: questionary.confirm(
+            f"Format {source_path.name} into Markdown with Gemini AI?",
+            default=True,
+            style=WIZARD_STYLE,
+            erase_when_done=True,
+        ).ask())
+        if confirm is None:
+            return None
+
+        if confirm:
             import subprocess
-            import sys
-            console.print("[dim]Formatting text with Gemini AI...[/dim]")
-            
-            # Use absolute path for the script
-            gen_md_script = (base_dir / "src" / "generate_markdown.py").resolve()
-            
-            if not gen_md_script.exists():
-                console.print(f"[red]ERROR: Internal script not found at {gen_md_script}[/red]")
+            console.print(f"[{DIM}]Formatting with Gemini AI…[/{DIM}]")
+            gen_md = (base_dir / "src" / "generate_markdown.py").resolve()
+            if not gen_md.exists():
+                console.print(f"[red]✗ Script not found: {gen_md}[/red]")
                 return None
-
             result = subprocess.run(
-                [sys.executable, str(gen_md_script), str(source_path)],
-                cwd=str(base_dir),
-                capture_output=True,
-                text=True
+                [sys.executable, str(gen_md), str(source_path)],
+                cwd=str(base_dir), capture_output=True, text=True,
             )
-            
             if result.returncode == 0:
-                # Update source to the newly created .md file
                 source = source_path.with_suffix(".md").name
-                console.print(f"[green]✓ Successfully formatted. New source file: {source}[/green]\n")
+                console.print(f"[{GREEN}]✓ Formatted → {source}[/{GREEN}]\n")
             else:
-                console.print(f"[red]❌ Formatting failed.[/red]")
-                if result.stderr:
-                    console.print(f"[dim]{result.stderr.strip()}[/dim]")
-                console.print("[yellow]Continuing with original file...[/yellow]\n")
+                console.print("[yellow]✗ Formatting failed, continuing with original.[/yellow]")
 
-    # 2. Provider
-    choices = ["Azure AI Translator", "DeepL API", "Auto (fallback)"]
-    provider = questionary.select(
+    # ── 2. Provider ───────────────────────────────────────────────────
+    provider_choices = ["Azure AI Translator", "DeepL API", "Auto (fallback)"]
+    provider = _ask(lambda: questionary.select(
         "Choose translation provider",
-        choices=choices,
+        choices=provider_choices,
         style=WIZARD_STYLE,
-    ).ask()
-    if provider is None: return None
+        erase_when_done=True,
+    ).ask())
+    if provider is None:
+        return None
+    _print_select("Choose translation provider", provider_choices, provider)
 
-    # 3. Output destination
-    output = questionary.select(
+    # ── 3. Output destination ─────────────────────────────────────────
+    output_choices = ["Google Drive", "Local only", "Local + Google Drive"]
+    output = _ask(lambda: questionary.select(
         "Output destination",
-        choices=["Google Drive", "Local only", "Local + Google Drive"],
+        choices=output_choices,
         style=WIZARD_STYLE,
-    ).ask()
-    if output is None: return None
+        erase_when_done=True,
+    ).ask())
+    if output is None:
+        return None
+    _print_select("Output destination", output_choices, output)
 
-    # 4. Target languages
-    langs_raw = questionary.text(
+    # ── 4. Target languages ───────────────────────────────────────────
+    known_line = Text()
+    known_line.append("  Known codes:  ", style=DIM)
+    known_line.append("  ".join(["EN", "ES", "FR", "DE", "IT", "PT", "ZH", "JA", "KO", "AR"]), style=BRIGHT)
+    console.print(known_line)
+
+    more_line = Text()
+    more_line.append("  More codes:   ", style=DIM)
+    more_line.append("https://www.deepl.com/docs-api/translate-text", style=f"underline {BLUE}")
+    console.print(more_line)
+    console.print()
+
+    langs_raw = _ask(lambda: questionary.text(
         "Target languages",
-        instruction="(examples: EN FR AR ZH JA KO)",
+        instruction="",
         style=WIZARD_STYLE,
-    ).ask()
-    if langs_raw is None: return None
+        erase_when_done=True,
+        validate=lambda v: True if v.strip() else "Enter at least one language code",
+    ).ask())
+    if langs_raw is None:
+        return None
+    _print_text("Target languages", "", langs_raw.upper())
 
     langs = langs_raw.upper().split()
-
-    return {
-        "source": source,
-        "provider": provider,
-        "output": output,
-        "languages": langs,
-    }
+    unknown = [l for l in langs if l not in LANGUAGES]
+    if unknown:
+        console.print(f"[yellow]⚠ Unknown code(s): {', '.join(unknown)} — proceeding anyway[/yellow]\n")
+    
+    return {"source": source, "provider": provider, "output": output, "languages": langs}

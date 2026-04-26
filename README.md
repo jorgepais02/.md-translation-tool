@@ -4,36 +4,49 @@ Pipeline automático para **traducir apuntes en Markdown** a múltiples idiomas 
 
 ## Características
 
-- **Traducción automática** multi-idioma con **Fallbacks Dinámicos**: Si una API falla (ej. Cuota de DeepL), salta automáticamente a la siguiente (Azure AI Translator) sin interrumpir el proceso.
-- **Generación en Google Drive Directa**: Sube automáticamente el documento `DOCX` compilado con plantilla predefinida y lo almacena como Doc nativo sin corromper estilos.
-- **Generación de DOCX local** con formato académico avanzado usando **Pandoc**. Incluye alineación RTL real (Bidi interactivo), inyección de estilos, portadas personalizadas y **numeración de página localizada** (Numeros árabes orientales, Hanzi chino/coreano/japonés según corresponda).
-- **Generación de PDF local** vía LibreOffice (sin APIs externas).
-- **CLI Interactivo y Seguro** súper fácil de usar. Chequea dependencias, permite auto-limpieza temporal (modo Cloud-Only) e integración con Gemini para embellecer raw text antes de traducir.
-- **Configuración Abstraída**: Comportamiento personalizable (organización en carpetas, nombres secuenciales, idiomas por defecto) mediante `config.json`.
+- **Traducción paralela** multi-idioma (hasta 4 idiomas simultáneos via `ThreadPoolExecutor`).
+- **Fallback dinámico**: si una API falla o supera cuota, salta automáticamente a la siguiente sin interrumpir el proceso.
+- **Tres proveedores de traducción**: DeepL, Azure AI Translator y Gemini (`gemini-2.5-flash`).
+- **Caché SQLite** con WAL mode: evita re-traducir textos ya procesados. Auto-vacuum cuando supera 50 MB.
+- **Protección de contenido**: los inline code spans, URLs y fórmulas LaTeX (`$...$`, `$$...$$`) no se traducen.
+- **Refinamiento post-traducción** con Gemini para idiomas complejos (árabe, chino, japonés, coreano, hebreo, persa, urdu).
+- **Generación DOCX** con formato académico real via Pandoc: alineación RTL (Bidi), fuentes CJK, cabecera personalizada, footer con paginación.
+- **Generación PDF local** via LibreOffice headless (opcional, no bloquea si no está instalado).
+- **Subida directa a Google Drive**: convierte el DOCX a Google Doc nativo. Soporta organización por carpetas de idioma y nombres secuenciales configurables.
+- **CLI interactivo** con Rich: wizard de configuración, vista de progreso en tiempo real, tabla de resultados y sección de warnings.
 
 ## Estructura
 
 ```
 ├── src/
-│   ├── translation_pipeline.py   # Orquestador: traduce y envía a generadores
-│   ├── translators.py            # Interfaces de DeepL y Azure Translator
-│   ├── document_converter.py     # Generador de DOCX local usando Pandoc
-│   ├── postprocess_docx.py       # Manipula el XML del DOCX para RTL, números locales y Header/Footer
-│   ├── ai_refiner.py             # Limpia modismos usando modelo Gemini (útil para Arabe/Chino)
-│   ├── google_docs_manager.py    # Subida rápida a Drive sin procesamiento HTTP excesivo
-│   └── templates/                # Plantillas DOCX de referencia para Pandoc
-├── sources/                      # Archivos .md de entrada
+│   ├── cli/
+│   │   ├── main.py               # Entry point (python -m src.cli.main)
+│   │   ├── wizard.py             # Wizard interactivo con questionary
+│   │   ├── pipeline.py           # Orquestador con Live view y ThreadPoolExecutor
+│   │   ├── results.py            # Tabla de resultados y warnings
+│   │   └── styles.py             # Constantes de color y console compartido
+│   ├── translation_pipeline.py   # Utilidades: parser MD, rebuild, DOCX, PDF
+│   ├── translators.py            # BaseTranslator + DeepL/Azure/Gemini + cache + protección
+│   ├── translation_cache.py      # Caché SQLite con WAL mode y auto-vacuum
+│   ├── document_converter.py     # Generador DOCX via Pandoc
+│   ├── postprocess_docx.py       # Postproceso XML del DOCX (RTL, CJK, header/footer)
+│   ├── ai_refiner.py             # Refinamiento Gemini nodo a nodo (solo AR/ZH/JA/KO/FA/HE/UR)
+│   ├── generate_markdown.py      # Convierte .txt raw → .md académico con Gemini
+│   └── google_docs_manager.py    # Subida a Drive, resolución de carpetas, naming secuencial
+├── sources/                      # Archivos .md/.txt de entrada
+├── templates/                    # template_ltr.docx + template_rtl.docx (referencia Pandoc)
 ├── public/
-│   └── header.png                # Imagen opcional de cabecera
-├── secrets/                      # Credenciales de Google Auth y Tokens (gitignored)
+│   └── header.png                # Imagen opcional de cabecera para DOCX
+├── secrets/                      # credentials.json + token.json de Google Auth (gitignored)
+├── cache/                        # translations.db — caché SQLite (gitignored)
 ├── translated/                   # Salida generada (gitignored)
 │   ├── es/es.md + es.docx + es.pdf
 │   ├── en/en.md + en.docx + en.pdf
 │   ├── fr/fr.md + fr.docx + fr.pdf
 │   ├── ar/ar.md + ar.docx + ar.pdf
 │   └── zh/zh.md + zh.docx + zh.pdf
-├── run_pipeline.sh               # Script de ejecución interactivo
-├── config.example.json           # Plantilla de configuración de usuario
+├── run_pipeline.sh               # Script de ejecución recomendado
+├── config.example.json           # Plantilla de configuración
 ├── requirements.txt
 └── .env                          # API keys (no versionado)
 ```
@@ -41,85 +54,77 @@ Pipeline automático para **traducir apuntes en Markdown** a múltiples idiomas 
 ## Instalación
 
 ```bash
-# Clonar el repo
 git clone <url-del-repo>
 cd .md-translation-tool
 
-# Crear entorno virtual e instalar dependencias
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-# Configurar API keys copiando el archivo de ejemplo
 cp .env.example .env
-# Edita el .env con tu clave de DeepL o Azure
-nano .env
+# Editar .env con las claves de API
 ```
-
-## Configuración de Google Docs (Opcional)
-
-Si quieres que el sistema suba automáticamente el documento generado directamente a tu Google Drive, organizado por idioma:
-
-1. Ve a [Google Cloud Console](https://console.cloud.google.com/).
-2. Habilita "Google Docs API" y "Google Drive API".
-3. Crea credenciales de tipo "OAuth client ID" para aplicación de escritorio.
-4. Descarga el JSON y guárdalo como `secrets/credentials.json`.
-5. La primera vez que lo ejecutes con Google Docs activado se abrirá tu navegador para pedirte permiso y se generará el `token.json` automático.
-
-## Configuración de Usuario (`config.json`)
-
-Para personalizar cómo se comportan los archivos (especialmente en Drive), copia `config.example.json` a `config.json` (ignorado por git). 
-
-**Características principales:**
-- `organize_by_language`: Si es `true`, creará subcarpetas en Drive usando los nombres definidos en `language_folder_names`.
-- `sequential_naming`: Si es `true`, leerá la carpeta y nombrará el siguiente archivo secuencialmente en base al patrón establecido en `sequential_naming_pattern`.
-- `sequential_naming_pattern`: Permite establecer el patrón de nombres automáticos en Drive. Puedes usar cualquier string y las etiquetas mágicas:
-  - `{n}`: Número secuencial autocalculado (1, 2, 3...)
-  - `{title}`: Nombre original del archivo `.md` (sin extensión)
-  - `{lang}`: Código del idioma en mayúsculas (EN, AR, ES...)
-  - Ejemplo: `"{n} - {title} ({lang})"` -> `1 - apuntes (EN)`
-- `header_image`: Ruta relativa a la imagen de cabecera (opcional).
 
 ## Uso
 
-La forma más sencilla y recomendada de lanzar el sistema es usando la interfaz interactiva `run_pipeline.sh`. Te hará unas preguntas rápidas antes de empezar:
-
 ```bash
-# Iniciar la interfaz interactiva
+# Interfaz interactiva (recomendado)
 ./run_pipeline.sh
 
-# O pasarle directamente el archivo y que te pregunte lo demás:
+# Con archivo pre-seleccionado
 ./run_pipeline.sh sources/apuntes.md
-```
 
-También puedes saltarte la interfaz interactiva y llamar al pipeline de Python directamente si quieres integrarlo en otros scripts:
-
-```bash
+# Directo con flags
 source .venv/bin/activate
-
-# Modo local + DeepL (por defecto)
-python src/translation_pipeline.py sources/apuntes.md
-
-# Generar solo en Google Drive usando Azure (borrando el rastro local con --cloud-only)
-python src/translation_pipeline.py sources/apuntes.md --provider azure --drive --cloud-only
-
-# Traducir solo a ciertos idiomas
-python src/translation_pipeline.py sources/apuntes.md --langs EN-GB FR AR
+python -m src.cli.main
+python -m src.cli.main --lang EN FR AR ZH --provider deepl
 ```
 
-## API Keys y Proveedores (Escalabilidad)
+## API Keys
 
-Consulta el archivo `.env.example` para la lista completa de variables. 
-1. **DeepL API** (Requiere `DEEPL_API_KEY`)
-2. **Azure AI Translator** (Requiere `AZURE_TRANSLATOR_KEY` y `AZURE_TRANSLATOR_REGION`)
+Configura en `.env` las claves de los proveedores que quieras usar. El sistema detecta automáticamente cuáles están disponibles y construye el fallback en orden.
 
-El sistema implementa un **Registro Dinámico**: Si en el futuro quieres añadir otra API (ej. OpenAI), solo tienes que crear su clase en `translators.py` y añadirla a `AVAILABLE_TRANSLATORS`. El menú CLI (`run_pipeline.sh`) detectará automáticamente qué APIs tienen configurada su clave en el `.env` y te las ofrecerá, ordenando los fallbacks inteligentemente según tu selección.
+| Variable                  | Proveedor               |
+|---------------------------|-------------------------|
+| `DEEPL_API_KEY`           | DeepL API               |
+| `AZURE_TRANSLATOR_KEY`    | Azure AI Translator     |
+| `AZURE_TRANSLATOR_REGION` | Azure AI Translator     |
+| `GEMINI_API_KEY`          | Gemini (Google AI)      |
+| `GOOGLE_DRIVE_FOLDER_ID`  | Google Drive (opcional) |
+
+Con un solo proveedor el sistema funciona. Con varios, activa el fallback automático si uno falla.
+
+## Configuración de Google Drive (Opcional)
+
+1. Ve a [Google Cloud Console](https://console.cloud.google.com/).
+2. Habilita **Google Docs API** y **Google Drive API**.
+3. Crea credenciales OAuth client ID para aplicación de escritorio.
+4. Descarga el JSON y guárdalo como `secrets/credentials.json`.
+5. El primer run abrirá el navegador para autorización y generará `secrets/token.json` automáticamente.
+
+## Configuración (`config.json`)
+
+Copia `config.example.json` a `config.json` (ignorado por git) para personalizar el comportamiento:
+
+- `organize_by_language`: crea subcarpetas en Drive por idioma.
+- `sequential_naming`: nombra los archivos secuencialmente en base a un patrón.
+- `sequential_naming_pattern`: patrón con etiquetas `{n}`, `{title}`, `{lang}`.  
+  Ejemplo: `"{n} - {title} ({lang})"` → `1 - apuntes (EN)`.
+- `default_languages`: idiomas por defecto en el wizard.
+- `header_image`: ruta relativa a la imagen de cabecera del DOCX.
 
 ## Generación de PDF
 
-Los PDF se generan localmente con LibreOffice en modo headless. Si LibreOffice no está instalado, el pipeline continúa sin interrumpirse (solo se genera `.md` y `.docx`).
+Se genera localmente con LibreOffice headless. Si no está instalado, el pipeline continúa sin interrumpirse (solo genera `.md` y `.docx`).
 
 ```bash
-# Instalar LibreOffice en macOS
 brew install --cask libreoffice
 ```
+
+## Añadir un proveedor de traducción
+
+1. Crear clase que extienda `BaseTranslator` en `src/translators.py`.
+2. Implementar `translate(texts: list[str], target_lang: str) -> list[str]`.
+3. Añadirla a `AVAILABLE_TRANSLATORS`.
+
+El wizard la detectará automáticamente si su API key está en `.env`.

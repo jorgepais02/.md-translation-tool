@@ -1,11 +1,15 @@
+import io
+import contextlib
 import os
 import pickle
+import re
 import base64
 from pathlib import Path
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
+from rich.console import Console
 
 # Scopes required for Google Drive and Docs
 # Added Drive for image uploading
@@ -30,32 +34,65 @@ LANG_NAMES = {
 class GoogleDocsManager:
     """Manages Google Docs creation, text insertion, and advanced formatting."""
     
-    def __init__(self, credentials_path: str = 'secrets/credentials.json', token_path: str = 'secrets/token.json'):
+    def __init__(self, credentials_path: str = 'secrets/credentials.json', token_path: str = 'secrets/token.json', console: Console | None = None):
         self.credentials_path = credentials_path
         self.token_path = token_path
+        self._console = console or Console()
         self.creds = self._authenticate()
         self.docs_service = build('docs', 'v1', credentials=self.creds)
         self.drive_service = build('drive', 'v3', credentials=self.creds)
 
     def _authenticate(self):
-        """Standard Google API OAuth2 authentication flow."""
+        """Standard Google API OAuth2 authentication flow with robust token handling."""
+        from google.auth.exceptions import RefreshError
         creds = None
+        # Load existing token if present
         if os.path.exists(self.token_path):
-            with open(self.token_path, 'rb') as token:
-                creds = pickle.load(token)
+            try:
+                with open(self.token_path, 'rb') as token:
+                    creds = pickle.load(token)
+            except Exception:
+                # Corrupted token file – remove it
+                os.remove(self.token_path)
+                creds = None
         
+        # If no valid credentials, obtain new ones
         if not creds or not creds.valid:
+            # Try to refresh if possible
             if creds and creds.expired and creds.refresh_token:
-                creds.refresh(Request())
-            else:
+                try:
+                    creds.refresh(Request())
+                except RefreshError:
+                    # Refresh failed – token likely revoked; delete and re-authenticate
+                    if os.path.exists(self.token_path):
+                        os.remove(self.token_path)
+                    creds = None
+            # If still no creds, start full auth flow
+            if not creds:
                 if not os.path.exists(self.credentials_path):
                     raise FileNotFoundError(
                         f"ERROR: {self.credentials_path} not found. "
                         "Please download it from Google Cloud Console and place it in secrets/credentials.json"
                     )
                 flow = InstalledAppFlow.from_client_secrets_file(self.credentials_path, SCOPES)
-                creds = flow.run_local_server(port=0)
-            
+                self._console.print("\n[bold yellow]Google Drive — autorización requerida[/bold yellow]")
+                self._console.print("[dim]Abriendo el navegador… si no se abre automáticamente, visita la URL que aparece a continuación.[/dim]\n")
+                try:
+                    captured = io.StringIO()
+                    with contextlib.redirect_stdout(captured):
+                        creds = flow.run_local_server(port=0)
+                    output = captured.getvalue()
+                    url_match = re.search(r'https://accounts\.google\.com\S+', output)
+                    if url_match:
+                        self._console.print(f"[blue]{url_match.group(0)}[/blue]\n")
+                    if creds and creds.valid:
+                        self._console.print("[green]✓ Autorización completada.[/green]\n")
+                    else:
+                        self._console.print("[yellow]⚠ Autorización incompleta — las credenciales no son válidas.[/yellow]\n")
+                except Exception as e:
+                    self._console.print(f"[red]✗ Error durante la autorización: {e}[/red]\n")
+                    raise
+            # Save the fresh credentials
             with open(self.token_path, 'wb') as token:
                 pickle.dump(creds, token)
         
@@ -103,28 +140,70 @@ class GoogleDocsManager:
         ).execute()
         return folder.get('id')
         
-    def get_next_sequential_name(self, folder_id: str) -> str:
-        """Count the number of files in a folder and return the next sequential number as a string."""
-        # Count all files in the folder (not just google docs) in case conversion failed or they uploaded as DOCX
+    def _list_file_names(self, folder_id: str) -> list[str]:
+        """Return all non-folder file names inside a Drive folder."""
         query = f"'{folder_id}' in parents and mimeType != 'application/vnd.google-apps.folder' and trashed=false"
-        # Using pagination to get accurate count if there are many files
-        count = 0
+        names = []
         page_token = None
         while True:
             results = self.drive_service.files().list(
-                q=query, 
-                fields='nextPageToken, files(id, mimeType)', 
+                q=query,
+                fields='nextPageToken, files(name)',
                 corpora='allDrives',
                 includeItemsFromAllDrives=True,
                 supportsAllDrives=True,
-                pageToken=page_token
+                pageToken=page_token,
             ).execute()
-            count += len(results.get('files', []))
+            names.extend(f['name'] for f in results.get('files', []))
             page_token = results.get('nextPageToken')
             if not page_token:
                 break
-        
-        return str(count + 1)
+        return names
+
+    @staticmethod
+    def _pattern_to_regex(pattern: str) -> re.Pattern:
+        """Convert a naming pattern like '{n} - {title} ({lang})' into a regex
+        that captures the {n} group as (\\d+)."""
+        # Split on placeholders, escape literal segments, rejoin
+        parts = re.split(r'(\{[^}]+\})', pattern)
+        regex = ''
+        for part in parts:
+            if part == '{n}':
+                regex += r'(\d+)'
+            elif part.startswith('{') and part.endswith('}'):
+                regex += r'.+?'
+            else:
+                regex += re.escape(part)
+        return re.compile('^' + regex + '$')
+
+    def _find_next_number(self, folder_id: str, pattern: str | None) -> int:
+        """Scan existing filenames in a folder and return the first unused
+        sequential number (filling gaps)."""
+        names = self._list_file_names(folder_id)
+        if not names:
+            return 1
+
+        # Build a regex from the pattern to extract {n}
+        if pattern and '{n}' in pattern:
+            rx = self._pattern_to_regex(pattern)
+        else:
+            # Fallback: match bare numbers
+            rx = re.compile(r'^(\d+)$')
+
+        used: set[int] = set()
+        for name in names:
+            m = rx.match(name)
+            if m:
+                try:
+                    used.add(int(m.group(1)))
+                except (ValueError, IndexError):
+                    pass
+
+        # First gap: smallest positive integer not in used
+        n = 1
+        while n in used:
+            n += 1
+        return n
 
     def resolve_language_folder(self, folder_id: str, lang: str, lang_folder_names: dict | None = None) -> str:
         """Find or create a language-specific subfolder."""
@@ -135,17 +214,23 @@ class GoogleDocsManager:
 
     def resolve_filename(self, title: str, folder_id: str, lang: str, sequential_naming: bool = False,
                          sequential_naming_pattern: str | None = None) -> str:
-        """Resolve the final file name, applying sequential naming if requested."""
+        """Resolve the final file name, applying sequential naming if requested.
+
+        Uses gap-filling: scans existing filenames in folder_id, extracts {n}
+        from each using the pattern as a regex, and picks the smallest unused
+        positive integer.
+        """
         if not sequential_naming:
             return title
 
-        next_num = self.get_next_sequential_name(folder_id)
+        next_num = str(self._find_next_number(folder_id, sequential_naming_pattern))
+
         if sequential_naming_pattern:
             doc_name = sequential_naming_pattern.replace("{n}", next_num)
             doc_name = doc_name.replace("{title}", title)
             doc_name = doc_name.replace("{lang}", lang.upper())
             return doc_name
-        
+
         return next_num
 
     def upload_docx(self, docx_path: Path, folder_id: str | None = None, filename: str | None = None) -> str:
@@ -188,7 +273,7 @@ class GoogleDocsManager:
                 # If it's a 500-level error and we haven't exhausted our retries
                 if e.resp.status >= 500 and attempt < max_retries - 1:
                     sleep_time = base_delay * (2 ** attempt)
-                    print(f"      [yellow]⚠ Drive API Error ({e.resp.status}). Retrying in {sleep_time}s...[/yellow]")
+                    self._console.print(f"[yellow]⚠ Drive API error {e.resp.status} — reintentando en {sleep_time}s…[/yellow]")
                     time.sleep(sleep_time)
                 else:
                     raise

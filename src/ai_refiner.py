@@ -16,6 +16,9 @@ from dataclasses import dataclass
 from typing import Literal
 from google import genai
 from google.genai import types
+from rich.console import Console
+
+console = Console(stderr=True)  # stderr so Live display on stdout is never interrupted
 
 # ── Tipos ─────────────────────────────────────────────────────────────────────
 NodeType = Literal[
@@ -129,9 +132,10 @@ SYSTEM = (
 
 BATCH = 25
 
-def _call_gemini(texts: list[str], lang: str, client) -> list[str]:
+def _call_gemini(texts: list[str], lang: str, client) -> tuple[list[str], str | None]:
+    """Returns (refined_lines, warning_or_None)."""
     if not texts:
-        return []
+        return [], None
     numbered = "\n".join(f"{i+1}. {t}" for i, t in enumerate(texts))
     resp = client.models.generate_content(
         model="gemini-2.5-flash",
@@ -148,30 +152,26 @@ def _call_gemini(texts: list[str], lang: str, client) -> list[str]:
         if m:
             out.append(m.group(1))
     if len(out) != len(texts):
-        print(f"  Warning: Gemini returned {len(out)}/{len(texts)} lines — using originals")
-        return texts
-    return out
+        return texts, f"Gemini returned {len(out)}/{len(texts)} lines"
+    return out, None
 
 
 # ── API pública ───────────────────────────────────────────────────────────────
 REFINABLE = {"paragraph", "list_item", "blockquote"}
 
-def refine_markdown(lines: list[str], lang_code: str) -> list[str]:
-    """Refina un MD traducido línea a línea. Devuelve líneas con estructura intacta."""
+def refine_markdown(lines: list[str], lang_code: str) -> tuple[list[str], str | None]:
+    """Refina un MD traducido. Devuelve (líneas, warning_o_None) sin imprimir nada."""
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
-        print("Warning: GEMINI_API_KEY not set. Skipping refinement.")
-        return lines
+        return lines, "GEMINI_API_KEY not set"
 
     try:
         client = genai.Client(api_key=api_key)
     except Exception as e:
-        print(f"Warning: Gemini init failed: {e}. Skipping.")
-        return lines
+        return lines, f"Gemini init failed: {e}"
 
     nodes = parse_nodes(lines)
 
-    # Extraer nodos refinables
     idxs, texts, imaps = [], [], []
     for i, n in enumerate(nodes):
         if n.type in REFINABLE and n.text.strip():
@@ -180,22 +180,22 @@ def refine_markdown(lines: list[str], lang_code: str) -> list[str]:
             texts.append(clean)
             imaps.append(tok)
 
-    # Batches
     refined = []
     try:
         for start in range(0, len(texts), BATCH):
-            refined += _call_gemini(texts[start:start + BATCH], lang_code, client)
+            batch_out, warn = _call_gemini(texts[start:start + BATCH], lang_code, client)
+            refined += batch_out
+            if warn:
+                return lines, warn
     except Exception as e:
-        print(f"Warning: Gemini failed: {e}. Using unrefined text.")
-        return lines
+        return lines, str(e)
 
-    # Reinsertar
     for pos, idx in enumerate(idxs):
         n = nodes[idx]
         restored = restore_inline(refined[pos], imaps[pos])
         nodes[idx] = Node(n.type, n.prefix + restored, restored, n.prefix)
 
-    return [n.raw for n in nodes]
+    return [n.raw for n in nodes], None
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
@@ -206,4 +206,7 @@ if __name__ == "__main__":
         sys.exit(1)
     with open(sys.argv[1]) as f:
         lines = f.read().splitlines()
-    print("\n".join(refine_markdown(lines, sys.argv[2])))
+    result, warning = refine_markdown(lines, sys.argv[2])
+    if warning:
+        print(f"⚠ {warning}", file=sys.stderr)
+    print("\n".join(result))

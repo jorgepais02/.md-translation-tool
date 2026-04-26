@@ -3,105 +3,100 @@ import sys
 import time
 import json
 from pathlib import Path
+from dotenv import load_dotenv
 
-# Add src to sys.path so we can import internal modules easily
+load_dotenv()
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from .wizard import run_wizard
 from .confirmation import show_confirmation
 from .pipeline import run_pipeline
 from .results import show_results
-from .styles import console
+from .styles import console, clear_screen
+
+VERSION = "2.1.0"
 
 def parse_args():
     parser = argparse.ArgumentParser(description="mdtranslator CLI")
-    parser.add_argument("file", nargs="?", help="Source file", default=None)
-    parser.add_argument("--lang", help="Target language codes (space-separated)", default=None)
-    parser.add_argument("--provider", help="Translation provider: azure|deepl|auto", default=None)
-    parser.add_argument("--output", help="Output: local|gdrive|both", default=None)
-    parser.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt")
-    parser.add_argument("--json", action="store_true", help="Machine-readable JSON output")
-    parser.add_argument("--verbose", "-v", action="store_true", help="Show debug logs")
-    parser.add_argument("--version", action="version", version="mdtranslator 2.1.0")
-
+    parser.add_argument("file",        nargs="?", default=None)
+    parser.add_argument("--lang",      default=None)
+    parser.add_argument("--provider",  default=None)
+    parser.add_argument("--output",    default=None)
+    parser.add_argument("--yes", "-y", action="store_true")
+    parser.add_argument("--json",      action="store_true")
+    parser.add_argument("--verbose", "-v", action="store_true")
+    parser.add_argument("--version",   action="version", version=f"mdtranslator {VERSION}")
     return parser.parse_args()
 
 def build_config_from_args(args) -> dict:
-    provider_map = {
-        "Azure AI Translator": "azure",
-        "DeepL API": "deepl",
-        "Auto (fallback)": "auto"
-    }
-    prov = args.provider if args.provider else "Auto (fallback)"
-    
+    provider_map = {"Azure AI Translator": "azure", "DeepL API": "deepl", "Auto (fallback)": "auto"}
     return {
-        "source": args.file or "Process ALL files",
-        "provider": provider_map.get(prov, prov),
-        "output": args.output or "Local only",
+        "source":    args.file or "Process ALL files",
+        "provider":  provider_map.get(args.provider or "", args.provider or "auto"),
+        "output":    args.output or "Local only",
         "languages": args.lang.upper().split() if args.lang else ["EN"],
     }
 
 def print_json_results(results: list[dict], total_time: float):
     failed = sum(1 for r in results if not r["ok"])
     print(json.dumps({
-        "status": "success" if failed == 0 else "partial_success",
-        "files": results,
+        "status":     "success" if not failed else "partial_success",
+        "files":      results,
         "total_time": total_time,
     }))
 
+def _abort():
+    clear_screen()
+    console.print(f"\n[dim]Cancelled.[/dim]\n")
+    sys.exit(0)
+
 def main():
     args = parse_args()
+    try:
+        _run(args)
+    except KeyboardInterrupt:
+        _abort()
 
-    if not args.json:
-        console.print("[dim]$ mdtranslator translate[/dim]\n")
+def _run(args):
+    provider_map = {"Azure AI Translator": "azure", "DeepL API": "deepl", "Auto (fallback)": "auto"}
 
-    # Stage 1
-    # If any specific non-interactive arg is missing and we don't have all interactive args, maybe we should just use wizard?
-    # For simplicity, if --lang is not provided, we run the wizard.
-    if not args.lang and not args.file and not args.provider and not sys.stdin.isatty():
-        # Edge case: piped input. Not handling wizard in non-tty here.
+    # Stage 1 — Wizard (prints its own header, no clear needed)
+    if args.json or args.lang:
         config = build_config_from_args(args)
     else:
-        config = run_wizard(args.file) if not args.lang else build_config_from_args(args)
-    
-    if config is None:
-        console.print("[dim]Aborted.[/dim]")
-        sys.exit(0)
+        config = run_wizard(args.file)
 
-    # Re-map provider if it came from the wizard (which uses the human-readable strings)
-    provider_map = {
-        "Azure AI Translator": "azure",
-        "DeepL API": "deepl",
-        "Auto (fallback)": "auto"
-    }
+    if config is None:
+        _abort()
+
     config["provider"] = provider_map.get(config["provider"], config["provider"])
 
-    # Stage 2
+    # Stage 2 — Confirmation
     if not args.yes and not args.json:
         if not show_confirmation(config):
-            console.print("[dim]Aborted.[/dim]")
-            sys.exit(0)
+            _abort()
 
-    # Stage 3
+    # Stage 3 — Pipeline
+    clear_screen()
     start = time.monotonic()
-    
     try:
         results = run_pipeline(config)
+    except KeyboardInterrupt:
+        _abort()
     except Exception as e:
-        console.print(f"[red]✗ Pipeline failed: {str(e)}[/red]")
+        console.print(f"\n[#dc3b3b]✗ Pipeline failed: {e}[/#dc3b3b]\n")
         sys.exit(2)
-        
+
     total_time = time.monotonic() - start
 
-    # Stage 4
-    if args.json:
-        print_json_results(results, total_time)
-    else:
-        show_results(results, total_time)
+    # Stage 4 — Results
+    clear_screen()
+    console.print()
+    console.print()
+    show_results(results, total_time)
 
-    # Exit code
-    failed = sum(1 for r in results if not r["ok"])
-    sys.exit(0 if failed == 0 else 1)
+    sys.exit(0 if not any(not r["ok"] for r in results) else 1)
 
 if __name__ == "__main__":
     main()

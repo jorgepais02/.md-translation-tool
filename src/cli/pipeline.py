@@ -1,38 +1,35 @@
 from rich.live import Live
-from rich.table import Table
-from rich.progress import Progress, BarColumn, TextColumn, TimeElapsedColumn
 from rich.console import Group
 from rich.text import Text
-from rich.panel import Panel
 import time
 import shutil
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from .styles import console
+from .styles import console, GREEN, BLUE, YELLOW, CYAN, DIM, BRIGHT, FG, needs_refine
 
-# Import real processing logic
 from translators import get_translator
 from ai_refiner import refine_markdown
 from translation_pipeline import (
-    parse_markdown_lines, 
-    rebuild_markdown_from_translations, 
-    generate_docx_document, 
+    parse_markdown_lines,
+    rebuild_markdown_from_translations,
+    generate_docx_document,
     convert_docx_to_pdf,
     TRANSLATED_DIR,
     DRIVE_FOLDER_ID,
-    CONFIG
+    CONFIG,
 )
 from google_docs_manager import GoogleDocsManager
 
+
 class PipelineView:
     def __init__(self, languages: list[str], source_file: str):
-        self.languages = languages
+        self.languages   = languages
         self.source_file = source_file
-        self.lang_status: dict[str, dict] = {
-            lang: {"status": "waiting", "time": None} for lang in languages
-        }
+        self.lang_status = {l: {"status": "waiting", "time": None} for l in languages}
         self.source_done = False
         self.source_time = None
-        self.overall_progress = 0
+        self.overall_pct = 0
 
     def set_source_done(self, elapsed: float):
         self.source_done = True
@@ -42,96 +39,79 @@ class PipelineView:
         self.lang_status[lang] = {"status": status, "time": elapsed}
 
     def set_progress(self, pct: int):
-        self.overall_progress = pct
+        self.overall_pct = pct
 
     def render(self) -> Group:
         parts = []
 
-        # Command echo
-        parts.append(Text(
-            f"$ mdtranslator translate {self.source_file} --lang {' '.join(self.languages)}",
-            style="dim",
-        ))
-        parts.append(Text())  # spacer
+        # ── header ──────────────────────────────────────────────────────────
+        header = Text()
+        header.append(f" {self.source_file}", style=FG)
+        header.append("  →  ", style=DIM)
+        header.append("  ".join(self.languages), style=CYAN)
+        parts.append(header)
+        parts.append(Text(f" {'─' * 44}", style=DIM))
+        parts.append(Text())
 
-        # Section: Pipeline
-        parts.append(Text("Pipeline", style="bold blue"))
-
-        # Source reading
+        # ── source bar ───────────────────────────────────────────────────────
+        src_label = Text()
+        src_label.append(" source", style=DIM)
         if self.source_done:
-            bar_text = "█" * 40 + " ✓"
-            style = "green"
+            src_label.append(f"   {self.source_time:.1f}s", style=DIM)
+        parts.append(src_label)
+
+        if self.source_done:
+            parts.append(Text(" " + "█" * 40 + "  ✓", style=GREEN))
         else:
-            bar_text = "█" * 15 + "░" * 25
-            style = "green"
+            parts.append(Text(" " + "█" * 15 + "░" * 25, style=BLUE))
 
-        source_line = Text()
-        source_line.append("Reading source ", style="white")
-        if self.source_time:
-            source_line.append(f"{self.source_time:.1f}s", style="dim")
-        parts.append(source_line)
-        parts.append(Text(bar_text, style=style))
-        parts.append(Text())  # spacer
+        parts.append(Text())
+        parts.append(Text())
 
-        # Translation status
-        parts.append(Text("Translating", style="white"))
+        # ── translation bar ──────────────────────────────────────────────────
+        trans_label = Text()
+        trans_label.append(" translating", style=DIM)
+        if self.overall_pct > 0:
+            trans_label.append(f"   {self.overall_pct}%", style=BRIGHT)
+        parts.append(trans_label)
 
-        # Overall bar
-        filled = int((self.overall_progress / 100) * 40)
-        bar = "█" * filled + "░" * (40 - filled)
-        parts.append(Text(bar, style="blue"))
+        filled = int((self.overall_pct / 100) * 40)
+        parts.append(Text(" " + "█" * filled + "░" * (40 - filled), style=BLUE))
+        parts.append(Text())
 
-        # Per-language status
+        # ── per-language status ───────────────────────────────────────────────
         for lang, info in self.lang_status.items():
-            line = Text("  ")
-            line.append(f"{lang:>3} ", style="cyan")
-
-            status = info["status"]
-            if status is None:
-                status = "waiting"
-
+            status = info["status"] or "waiting"
+            line = Text()
+            line.append(f"   {lang:>3} ", style=CYAN)
             if status.startswith("✓"):
-                line.append(status, style="green")
-            elif status in ("translating…", "refining…"):
-                line.append(status, style="yellow")
+                line.append(status, style=GREEN)
+            elif status in ("translating…", "refining…", "uploading…"):
+                line.append(status, style=YELLOW)
             elif status.startswith("✗"):
-                line.append(status, style="red")
+                line.append(status, style="#dc3b3b")
             else:
-                line.append(status, style="dim")
-
+                line.append(status, style=DIM)
             if info["time"]:
-                line.append(f"  {info['time']:.1f}s", style="dim")
-
+                line.append(f"   {info['time']:.1f}s", style=DIM)
             parts.append(line)
-
-        parts.append(Text())  # spacer
-
-        # Progress summary
-        progress_line = Text()
-        progress_line.append("Progress ", style="white")
-        prog_filled = self.overall_progress // 10
-        progress_line.append("██" * prog_filled, style="blue")
-        progress_line.append("░░" * (10 - prog_filled), style="dim")
-        progress_line.append(f" {self.overall_progress}%", style="bold white")
-        parts.append(progress_line)
 
         return Group(*parts)
 
+
 def run_pipeline(config: dict) -> list[dict]:
-    languages = config["languages"]
+    languages  = config["languages"]
     source_cfg = config["source"]
-    provider = config["provider"]
+    provider   = config["provider"]
     output_cfg = config["output"]
-    folder_id = config.get("folder")
-    
+    folder_id  = config.get("folder")
+
     project_root = Path(__file__).resolve().parent.parent.parent
-    sources_dir = project_root / "sources"
-    
+    sources_dir  = project_root / "sources"
+
     if source_cfg == "Process ALL files":
         files = list(sources_dir.glob("*.md")) + list(sources_dir.glob("*.txt"))
     else:
-        # source_cfg might be "sources/apuntes.md" or just "apuntes.md"
-        # Since we are already appending sources_dir, we check if it already starts with it
         p = Path(source_cfg)
         if p.is_absolute():
             file_path = p
@@ -139,167 +119,187 @@ def run_pipeline(config: dict) -> list[dict]:
             file_path = project_root / source_cfg
         else:
             file_path = sources_dir / source_cfg
-            
         files = [file_path] if file_path.exists() else []
-        
+
     if not files:
         raise ValueError(f"No files found for: {source_cfg}")
-        
+
     use_google = "Google Drive" in output_cfg
-    no_local = "Google Drive Only" in output_cfg
-    
-    # Initialize translator config
+    no_local   = output_cfg == "Google Drive"
+
     translator = get_translator(provider)
-    
-    # Initialize Google Docs Manager if needed
-    g_manager = None
-    if use_google:
-        g_manager = GoogleDocsManager()
-        
+    # GoogleDocsManager uses httplib2 which is not thread-safe — instantiate per thread
     all_results = []
-    
+
     for f_path in files:
         view = PipelineView(languages, f_path.name)
-        
-        with Live(view.render(), console=console, refresh_per_second=8) as live:
-            start_reading = time.monotonic()
-            
-            # Step 1: Read source
+
+        console.print()
+        console.print()
+        with Live(view.render(), console=console, refresh_per_second=4) as live:
+
+            t0 = time.monotonic()
             try:
-                lines = f_path.read_text(encoding="utf-8").splitlines()
+                lines  = f_path.read_text(encoding="utf-8").splitlines()
                 parsed = parse_markdown_lines(lines)
-                texts_to_translate = [text for kind, _pfx, text in parsed if text]
+                texts  = [text for _, _pfx, text in parsed if text]
             except Exception as e:
-                console.print(f"[red]✗ Failed reading {f_path.name}: {e}[/red]")
+                console.print(f"[#dc3b3b]✗ Failed reading {f_path.name}: {e}[/#dc3b3b]")
                 continue
-                
-            elapsed_read = time.monotonic() - start_reading
-            view.set_source_done(elapsed_read)
+
+            view.set_source_done(time.monotonic() - t0)
             view.set_progress(10)
             live.update(view.render())
-            
-            # Step 1.5: ES Original handling (local & drive sync)
-            es_folder = TRANSLATED_DIR / "es"
-            es_folder.mkdir(parents=True, exist_ok=True)
-            es_file = es_folder / "es.md"
-            es_url = None
-            
-            if not no_local or (no_local and g_manager):
-                shutil.copy2(f_path, es_file)
-                try:
-                    docx_file = generate_docx_document(es_file, "es")
-                    if not no_local:
-                        convert_docx_to_pdf(docx_file)
-                        
-                    if g_manager:
-                        target_folder = folder_id or DRIVE_FOLDER_ID
-                        if CONFIG.get("drive", {}).get("organize_by_language", False):
-                            target_folder = g_manager.resolve_language_folder(
-                                target_folder, "es", CONFIG.get("drive", {}).get("language_folder_names")
-                            )
-                        doc_name = g_manager.resolve_filename(
-                            title=f_path.stem, 
-                            folder_id=target_folder, 
-                            lang="es",
-                            sequential_naming=CONFIG.get("drive", {}).get("sequential_naming", False),
-                            sequential_naming_pattern=CONFIG.get("drive", {}).get("sequential_naming_pattern")
-                        )
-                        doc_id = g_manager.upload_docx(docx_file, target_folder, filename=doc_name)
-                        es_url = g_manager.get_document_url(doc_id)
-                except Exception:
-                    pass
 
-            # Step 2: Translate each language
-            total = len(languages)
-            for i, lang in enumerate(languages):
+            # ES original — always when uploading to Drive, or when explicitly requested
+            es_langs = {l for l in languages if l.upper().startswith("ES")}
+            if es_langs or use_google:
+                es_folder = TRANSLATED_DIR / "es"
+                es_folder.mkdir(parents=True, exist_ok=True)
+                es_file = es_folder / "es.md"
+                src_content = f_path.read_text(encoding="utf-8")
+                if not es_file.exists() or es_file.read_text(encoding="utf-8") != src_content:
+                    es_file.write_text(src_content, encoding="utf-8")
+                es_ok      = True
+                es_url     = None
+                es_warning = None
+                try:
+                    docx_es = es_file.with_suffix(".docx")
+                    if not docx_es.exists() or es_file.stat().st_mtime > docx_es.stat().st_mtime:
+                        docx_es = generate_docx_document(es_file, "es")
+                    if not no_local:
+                        pdf_es = docx_es.with_suffix(".pdf")
+                        if not pdf_es.exists() or docx_es.stat().st_mtime > pdf_es.stat().st_mtime:
+                            try:
+                                convert_docx_to_pdf(docx_es)
+                            except Exception as pdf_err:
+                                es_warning = str(pdf_err)
+                    if use_google:
+                        gm  = GoogleDocsManager(console=console)
+                        tgt = folder_id or DRIVE_FOLDER_ID
+                        if CONFIG.get("drive", {}).get("organize_by_language"):
+                            tgt = gm.resolve_language_folder(tgt, "es", CONFIG["drive"].get("language_folder_names"))
+                        name = gm.resolve_filename(title=f_path.stem, folder_id=tgt, lang="es",
+                            sequential_naming=CONFIG.get("drive", {}).get("sequential_naming", False),
+                            sequential_naming_pattern=CONFIG.get("drive", {}).get("sequential_naming_pattern"))
+                        doc_id = gm.upload_docx(docx_es, tgt, filename=name)
+                        es_url = gm.get_document_url(doc_id)
+                except Exception:
+                    es_ok = False
+                all_results.append({
+                    "lang":      "ES",
+                    "file":      "es.docx" if es_ok else "—",
+                    "ok":        es_ok,
+                    "time":      0.0,
+                    "gdocs_url": es_url,
+                    "warning":   es_warning,
+                })
+
+            non_es_languages = [l for l in languages if not l.upper().startswith("ES")]
+            total        = len(non_es_languages)
+            completed    = 0
+            counter_lock  = threading.Lock()
+            gemini_sem    = threading.Semaphore(1)  # Gemini free tier: serialize refinement calls
+
+            def _process_lang(lang: str) -> dict:
+                nonlocal completed
+                short     = lang.lower().split("-")[0]
+                g_manager = GoogleDocsManager(console=console) if use_google else None
+
                 view.set_lang_status(lang, "translating…")
-                view.set_progress(10 + int((i / total) * 80))
                 live.update(view.render())
 
-                start_lang = time.monotonic()
-                ok = True
-                url = None
-                short = lang.lower().split("-")[0]
-                
-                try:
-                    translated = translator.translate(texts_to_translate, lang)
-                    rebuilt = rebuild_markdown_from_translations(parsed, translated)
+                t_lang      = time.monotonic()
+                ok          = True
+                url         = None
+                warning     = None
 
-                    # Optional: refinement for specific languages
-                    needs_refinement = short in ('ar', 'zh', 'ja', 'ko', 'fa', 'he', 'ur')
-                    if needs_refinement:
+                try:
+                    translated = translator.translate(texts, lang)
+                    rebuilt    = rebuild_markdown_from_translations(parsed, translated)
+
+                    if needs_refine(lang):
                         view.set_lang_status(lang, "refining…")
                         live.update(view.render())
-                        try:
-                            rebuilt = refine_markdown(rebuilt, lang)
-                        except Exception:
-                            pass # keep non-refined version if fail
+                        with gemini_sem:
+                            rebuilt, refine_warn = refine_markdown(rebuilt, lang)
+                        if refine_warn:
+                            warning = refine_warn
+                            view.set_lang_status(lang, "✓ unrefined")
+                            live.update(view.render())
 
                     lang_folder = TRANSLATED_DIR / short
                     lang_folder.mkdir(parents=True, exist_ok=True)
                     out_file = lang_folder / f"{short}.md"
-                    out_file.write_text("\n".join(rebuilt) + "\n", encoding="utf-8")
-                    
-                    if not no_local or (no_local and g_manager):
-                        docx_file = generate_docx_document(out_file, short)
-                        if not no_local:
-                            convert_docx_to_pdf(docx_file)
-                            
-                        if g_manager:
-                            view.set_lang_status(lang, "uploading…")
-                            live.update(view.render())
-                            
-                            target_folder = folder_id or DRIVE_FOLDER_ID
-                            if CONFIG.get("drive", {}).get("organize_by_language", False):
-                                target_folder = g_manager.resolve_language_folder(
-                                    target_folder, short, CONFIG.get("drive", {}).get("language_folder_names")
-                                )
-                            doc_name = g_manager.resolve_filename(
-                                title=f_path.stem, 
-                                folder_id=target_folder, 
-                                lang=short,
-                                sequential_naming=CONFIG.get("drive", {}).get("sequential_naming", False),
-                                sequential_naming_pattern=CONFIG.get("drive", {}).get("sequential_naming_pattern")
-                            )
-                            doc_id = g_manager.upload_docx(docx_file, target_folder, filename=doc_name)
-                            url = g_manager.get_document_url(doc_id)
-                            
-                except Exception as e:
-                    ok = False
-                    error_msg = str(e).lower()
-                    if "auth" in error_msg:
-                        view.set_lang_status(lang, "✗ auth fail")
-                    elif "timeout" in error_msg:
-                        view.set_lang_status(lang, "✗ timeout")
-                    else:
-                        view.set_lang_status(lang, "✗ failed")
+                    new_content = "\n".join(rebuilt) + "\n"
+                    if not out_file.exists() or out_file.read_text(encoding="utf-8") != new_content:
+                        out_file.write_text(new_content, encoding="utf-8")
 
-                elapsed = time.monotonic() - start_lang
-                
+                    docx_file = out_file.with_suffix(".docx")
+                    if not docx_file.exists() or out_file.stat().st_mtime > docx_file.stat().st_mtime:
+                        docx_file = generate_docx_document(out_file, short)
+
+                    if not no_local:
+                        pdf_file = docx_file.with_suffix(".pdf")
+                        if not pdf_file.exists() or docx_file.stat().st_mtime > pdf_file.stat().st_mtime:
+                            try:
+                                convert_docx_to_pdf(docx_file)
+                            except Exception as pdf_err:
+                                warning = warning or str(pdf_err)
+
+                    if g_manager:
+                        view.set_lang_status(lang, "uploading…")
+                        live.update(view.render())
+                        tgt = folder_id or DRIVE_FOLDER_ID
+                        if CONFIG.get("drive", {}).get("organize_by_language"):
+                            tgt = g_manager.resolve_language_folder(tgt, short, CONFIG["drive"].get("language_folder_names"))
+                        name = g_manager.resolve_filename(title=f_path.stem, folder_id=tgt, lang=short,
+                            sequential_naming=CONFIG.get("drive", {}).get("sequential_naming", False),
+                            sequential_naming_pattern=CONFIG.get("drive", {}).get("sequential_naming_pattern"))
+                        doc_id = g_manager.upload_docx(docx_file, tgt, filename=name)
+                        url = g_manager.get_document_url(doc_id)
+
+                except Exception as e:
+                    ok      = False
+                    warning = str(e)
+                    err     = warning.lower()
+                    view.set_lang_status(lang, "✗ auth fail" if "auth" in err else "✗ timeout" if "timeout" in err else "✗ failed")
+
+                elapsed = time.monotonic() - t_lang
                 if ok:
                     view.set_lang_status(lang, "✓ generated", elapsed)
 
-                view.set_progress(10 + int(((i + 1) / total) * 80))
+                with counter_lock:
+                    completed += 1
+                    view.set_progress(10 + int((completed / total) * 80))
                 live.update(view.render())
 
-                all_results.append({
-                    "lang": lang,
-                    "file": f"{f_path.stem}_{short}.docx" if ok else "—",
-                    "ok": ok,
-                    "time": elapsed,
-                    "gdocs_url": url
-                })
-                
-                if no_local and lang_folder.exists():
-                    shutil.rmtree(lang_folder)
+                if no_local and (TRANSLATED_DIR / short).exists():
+                    shutil.rmtree(TRANSLATED_DIR / short)
 
-            # Cleanup es
-            if no_local and es_folder.exists():
+                return {
+                    "lang":      lang,
+                    "file":      f"{short}.docx" if ok else "—",
+                    "ok":        ok,
+                    "time":      elapsed,
+                    "gdocs_url": url,
+                    "warning":   warning,
+                }
+
+            if non_es_languages:
+                max_workers = min(len(non_es_languages), 4)
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    futures = {executor.submit(_process_lang, lang): lang for lang in non_es_languages}
+                    for future in as_completed(futures):
+                        try:
+                            all_results.append(future.result())
+                        except Exception:
+                            pass
+
+            if no_local and es_langs and es_folder.exists():
                 shutil.rmtree(es_folder)
 
-            # Step 3: Finish
             view.set_progress(100)
             live.update(view.render())
-            time.sleep(0.2)
-            
+
     return all_results
