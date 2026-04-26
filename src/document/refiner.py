@@ -1,10 +1,10 @@
 """
-ai_refiner.py — Refinamiento nodo a nodo de MD traducido con Gemini.
+Refinamiento nodo a nodo de MD traducido con Gemini.
 
 Estrategia:
   - Parsear el MD en nodos tipados
   - Mandar a Gemini SOLO texto plano (paragraph, list_item, blockquote)
-  - Los inline spans (bold, code, links) se extraen como placeholders antes de Gemini
+  - Los inline spans se extraen como placeholders antes de Gemini
   - El MD de salida es estructuralmente idéntico al de entrada
 
 Nodos refinables:  paragraph, list_item, blockquote
@@ -18,9 +18,8 @@ from google import genai
 from google.genai import types
 from rich.console import Console
 
-console = Console(stderr=True)  # stderr so Live display on stdout is never interrupted
+console = Console(stderr=True)
 
-# ── Tipos ─────────────────────────────────────────────────────────────────────
 NodeType = Literal[
     "frontmatter", "heading", "paragraph", "list_item",
     "blockquote", "code_block", "table_row", "hr", "blank"
@@ -30,11 +29,10 @@ NodeType = Literal[
 class Node:
     type:   NodeType
     raw:    str
-    text:   str    # texto refinable (vacío si no aplica)
-    prefix: str    # prefijo estructural ("- ", "> ", "1. ")
+    text:   str
+    prefix: str
 
 
-# ── Frontmatter ───────────────────────────────────────────────────────────────
 def split_frontmatter(lines: list[str]) -> tuple[list[str], list[str]]:
     if not lines or lines[0].strip() != "---":
         return [], lines
@@ -44,7 +42,6 @@ def split_frontmatter(lines: list[str]) -> tuple[list[str], list[str]]:
     return [], lines
 
 
-# ── Parser ────────────────────────────────────────────────────────────────────
 def parse_nodes(lines: list[str]) -> list[Node]:
     nodes = []
     fm_lines, body = split_frontmatter(lines)
@@ -55,7 +52,6 @@ def parse_nodes(lines: list[str]) -> list[Node]:
     in_code = False
     fence   = ""
     for line in body:
-        # Code fence
         m = re.match(r'^(`{3,}|~{3,})', line)
         if m:
             if not in_code:
@@ -67,7 +63,6 @@ def parse_nodes(lines: list[str]) -> list[Node]:
         if in_code:
             nodes.append(Node("code_block", line, "", ""))
             continue
-
         if not line.strip():
             nodes.append(Node("blank", line, "", ""))
             continue
@@ -80,28 +75,24 @@ def parse_nodes(lines: list[str]) -> list[Node]:
         if re.match(r'^\s*\|', line) or re.match(r'^[\s|:-]+$', line):
             nodes.append(Node("table_row", line, "", ""))
             continue
-
         bq = re.match(r'^(>\s?)(.*)', line)
         if bq:
             nodes.append(Node("blockquote", line, bq.group(2), bq.group(1)))
             continue
-
         li = re.match(r'^(\s*(?:[-*+]|\d+\.)\s)(.*)', line)
         if li:
             nodes.append(Node("list_item", line, li.group(2), li.group(1)))
             continue
-
         nodes.append(Node("paragraph", line, line, ""))
 
     return nodes
 
 
-# ── Inline placeholders ───────────────────────────────────────────────────────
 INLINE_RE = re.compile(
-    r'(`[^`]+`'            # código inline
-    r'|\*{1,3}[^*\n]+\*{1,3}'  # bold/italic
+    r'(`[^`]+`'
+    r'|\*{1,3}[^*\n]+\*{1,3}'
     r'|_{1,3}[^_\n]+_{1,3}'
-    r'|\[.*?\]\(.*?\)'     # links
+    r'|\[.*?\]\(.*?\)'
     r')'
 )
 
@@ -119,7 +110,6 @@ def restore_inline(text: str, tokens: dict) -> str:
     return text
 
 
-# ── Gemini ────────────────────────────────────────────────────────────────────
 SYSTEM = (
     "You are a native-speaker editor for {lang}. "
     "You receive numbered plain-text lines from auto-translated academic notes. "
@@ -133,7 +123,6 @@ SYSTEM = (
 BATCH = 25
 
 def _call_gemini(texts: list[str], lang: str, client) -> tuple[list[str], str | None]:
-    """Returns (refined_lines, warning_or_None)."""
     if not texts:
         return [], None
     numbered = "\n".join(f"{i+1}. {t}" for i, t in enumerate(texts))
@@ -156,7 +145,6 @@ def _call_gemini(texts: list[str], lang: str, client) -> tuple[list[str], str | 
     return out, None
 
 
-# ── API pública ───────────────────────────────────────────────────────────────
 REFINABLE = {"paragraph", "list_item", "blockquote"}
 
 def refine_markdown(lines: list[str], lang_code: str) -> tuple[list[str], str | None]:
@@ -164,14 +152,12 @@ def refine_markdown(lines: list[str], lang_code: str) -> tuple[list[str], str | 
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         return lines, "GEMINI_API_KEY not set"
-
     try:
         client = genai.Client(api_key=api_key)
     except Exception as e:
         return lines, f"Gemini init failed: {e}"
 
     nodes = parse_nodes(lines)
-
     idxs, texts, imaps = [], [], []
     for i, n in enumerate(nodes):
         if n.type in REFINABLE and n.text.strip():
@@ -198,11 +184,10 @@ def refine_markdown(lines: list[str], lang_code: str) -> tuple[list[str], str | 
     return [n.raw for n in nodes], None
 
 
-# ── CLI ───────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     import sys
     if len(sys.argv) < 3:
-        print("Usage: python ai_refiner.py input.md lang_code")
+        print("Usage: python -m src.document.refiner input.md lang_code")
         sys.exit(1)
     with open(sys.argv[1]) as f:
         lines = f.read().splitlines()

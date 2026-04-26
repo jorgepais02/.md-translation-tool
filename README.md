@@ -1,4 +1,4 @@
-# .MD Translation Tool
+# mdtranslator
 
 Pipeline automático para **traducir apuntes en Markdown** a múltiples idiomas y generar documentos **Word (.docx)** y **PDF** con formato académico.
 
@@ -24,27 +24,34 @@ Pipeline automático para **traducir apuntes en Markdown** a múltiples idiomas 
 │   │   ├── wizard.py             # Wizard interactivo con questionary
 │   │   ├── pipeline.py           # Orquestador con Live view y ThreadPoolExecutor
 │   │   ├── results.py            # Tabla de resultados y warnings
-│   │   └── styles.py             # Constantes de color y console compartido
-│   ├── translation_pipeline.py   # Utilidades: parser MD, rebuild, DOCX, PDF
-│   ├── translators.py            # BaseTranslator + DeepL/Azure/Gemini + cache + protección
-│   ├── translation_cache.py      # Caché SQLite con WAL mode y auto-vacuum
-│   ├── document_converter.py     # Generador DOCX via Pandoc
-│   ├── postprocess_docx.py       # Postproceso XML del DOCX (RTL, CJK, header/footer)
-│   ├── ai_refiner.py             # Refinamiento Gemini nodo a nodo (solo AR/ZH/JA/KO/FA/HE/UR)
-│   ├── generate_markdown.py      # Convierte .txt raw → .md académico con Gemini
-│   └── google_docs_manager.py    # Subida a Drive, resolución de carpetas, naming secuencial
+│   │   ├── styles.py             # Constantes de color y console compartido
+│   │   ├── confirmation.py       # Pantalla de confirmación previa al pipeline
+│   │   └── errors.py             # Manejo de errores CLI
+│   ├── core/
+│   │   ├── config.py             # Carga y validación de config.json + .env
+│   │   ├── parser.py             # Parser MD en nodos tipados
+│   │   └── docgen.py             # Rebuild de MD traducido
+│   ├── document/
+│   │   ├── converter.py          # Generador DOCX via Pandoc
+│   │   ├── postprocess.py        # Postproceso XML del DOCX (RTL, CJK, header/footer)
+│   │   └── refiner.py            # Refinamiento Gemini nodo a nodo (AR/ZH/JA/KO/FA/HE/UR)
+│   ├── integrations/
+│   │   ├── drive.py              # Subida a Drive, resolución de carpetas, naming secuencial
+│   │   └── generate_md.py        # Convierte .txt raw → .md académico con Gemini
+│   └── translators/
+│       ├── base.py               # BaseTranslator ABC
+│       ├── deepl.py              # Proveedor DeepL
+│       ├── azure.py              # Proveedor Azure AI Translator
+│       ├── gemini.py             # Proveedor Gemini
+│       ├── cache.py              # Caché SQLite con WAL mode y auto-vacuum
+│       ├── registry.py           # Registro de proveedores disponibles
+│       └── wrappers.py           # FallbackTranslator + CachedTranslator
 ├── sources/                      # Archivos .md/.txt de entrada
 ├── templates/                    # template_ltr.docx + template_rtl.docx (referencia Pandoc)
 ├── public/
 │   └── header.png                # Imagen opcional de cabecera para DOCX
 ├── secrets/                      # credentials.json + token.json de Google Auth (gitignored)
-├── cache/                        # translations.db — caché SQLite (gitignored)
 ├── translated/                   # Salida generada (gitignored)
-│   ├── es/es.md + es.docx + es.pdf
-│   ├── en/en.md + en.docx + en.pdf
-│   ├── fr/fr.md + fr.docx + fr.pdf
-│   ├── ar/ar.md + ar.docx + ar.pdf
-│   └── zh/zh.md + zh.docx + zh.pdf
 ├── run_pipeline.sh               # Script de ejecución recomendado
 ├── config.example.json           # Plantilla de configuración
 ├── requirements.txt
@@ -55,14 +62,13 @@ Pipeline automático para **traducir apuntes en Markdown** a múltiples idiomas 
 
 ```bash
 git clone <url-del-repo>
-cd .md-translation-tool
+cd mdtranslator
 
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
 cp .env.example .env
-# Editar .env con las claves de API
 ```
 
 ## Uso
@@ -123,8 +129,8 @@ brew install --cask libreoffice
 
 ## Añadir un proveedor de traducción
 
-1. Crear clase que extienda `BaseTranslator` en `src/translators.py`.
+1. Crear clase que extienda `BaseTranslator` en `src/translators/base.py`.
 2. Implementar `translate(texts: list[str], target_lang: str) -> list[str]`.
-3. Añadirla a `AVAILABLE_TRANSLATORS`.
+3. Registrarla en `src/translators/registry.py`.
 
 El wizard la detectará automáticamente si su API key está en `.env`.

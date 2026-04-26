@@ -1,9 +1,13 @@
 {
   "drive": {
+    "folder_id": "",
     "organize_by_language": false,
     "sequential_naming": false,
     "sequential_naming_pattern": "{n} - {title}. {lang}",
     "language_folder_names": {}
+  },
+  "local": {
+    "naming_pattern": "{title}.{lang}"
   },
   "document": {
     "header_image": null,

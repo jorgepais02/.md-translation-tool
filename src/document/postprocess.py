@@ -1,15 +1,15 @@
 """
-postprocess_docx.py — post-proceso del .docx generado por Pandoc.
+Post-proceso del .docx generado por Pandoc.
 
   1. fix_tables        — tblW=100%, jc=left/right, tblInd=0
-  2. fix_blocktext     — spacer tras BlockText (Pandoc ignora after-spacing)
-  3. fix_rtl           — bidi + jc=right + indent derecho a todos los párrafos (ar/he/fa/ur)
-  4. fix_cjk_fonts     — Noto Sans CJK SC  (zh/ja/ko/vi)
-  5. inject_header     — imagen de cabecera (--header path/to/img.png)
+  2. fix_blocktext     — spacer tras BlockText
+  3. fix_rtl           — bidi + jc=right + indent derecho (ar/he/fa/ur)
+  4. fix_cjk_fonts     — Noto Sans CJK SC (zh/ja/ko/vi)
+  5. inject_header     — imagen de cabecera
   6. inject_page_numbers — número de página en el footer
 
 Usage:
-    python postprocess_docx.py output.docx [--lang zh] [--header public/header.png]
+    python -m src.document.postprocess output.docx [--lang zh] [--header public/header.png]
 """
 
 import argparse, shutil, struct, tempfile, zipfile
@@ -28,10 +28,8 @@ CJK_LANGS = {"zh", "ja", "ko", "vi"}
 RTL_LANGS = {"ar", "he", "fa", "ur"}
 CJK_FONT  = "Noto Sans CJK SC"
 
-# Estilos de párrafo que Pandoc genera — todos necesitan bidi en RTL
 PARA_STYLES = {"Normal","BodyText","FirstParagraph","BlockText","Compact",
                "Title","Heading1","Heading2","Heading3","Heading4"}
-# Estilos que NO deben ser RTL (código siempre LTR)
 LTR_STYLES  = {"SourceCode","VerbatimChar"}
 
 TBLPR_ORDER = ["tblStyle","tblpPr","tblOverlap","bidiVisual","tblStyleRowBandSize",
@@ -58,7 +56,6 @@ def set_el(parent, tag, attrs):
     return el
 
 
-# ── 1. Tablas ─────────────────────────────────────────────────────────────────
 def fix_tables(body, rtl=False):
     jc_val = "right" if rtl else "left"
     for tbl in body.findall(f".//{w('tbl')}"):
@@ -74,7 +71,6 @@ def fix_tables(body, rtl=False):
         reorder(tblPr, TBLPR_ORDER)
 
 
-# ── 2. BlockText spacing ──────────────────────────────────────────────────────
 def fix_blocktext_spacing(body):
     children = list(body)
     inserts = []
@@ -93,37 +89,24 @@ def fix_blocktext_spacing(body):
         body.insert(idx, spacer)
 
 
-# ── 3. RTL: bidi + jc=right + indent derecho en cada párrafo ─────────────────
 def fix_rtl(body):
-    """
-    Pandoc no propaga bidi/jc de los estilos a los párrafos del documento.
-    Lo inyectamos inline en cada párrafo excepto bloques de código.
-    """
+    """Inyecta bidi/jc inline en cada párrafo — Pandoc no propaga los estilos RTL."""
     for p in body.findall(f".//{w('p')}"):
         pPr = p.find(w("pPr"))
         if pPr is None:
             pPr = etree.SubElement(p, w("pPr"))
             p.insert(0, pPr)
-
-        # Detectar si es código (LTR siempre)
         ps = pPr.find(w("pStyle"))
         style = ps.get(w("val")) if ps is not None else "Normal"
         if style in LTR_STYLES:
             continue
-
-        # bidi
         bidi = pPr.find(w("bidi"))
         if bidi is None: bidi = etree.SubElement(pPr, w("bidi"))
         bidi.set(w("val"), "1")
-
-        # jc=left + bidi=1 = alineación derecha visual en RTL (comportamiento Word estándar)
         jc = pPr.find(w("jc"))
         if jc is None: jc = etree.SubElement(pPr, w("jc"))
         jc.set(w("val"), "left")
-
         reorder(pPr, PPR_ORDER)
-
-    # También activar bidi en los runs de texto árabe
     for r_el in body.findall(f".//{w('r')}"):
         rPr = r_el.find(w("rPr"))
         if rPr is None:
@@ -135,7 +118,6 @@ def fix_rtl(body):
         rtl_el.set(w("val"), "1")
 
 
-# ── 4. CJK fonts ──────────────────────────────────────────────────────────────
 def fix_cjk_fonts(doc_root, styles_root):
     for rFonts in list(doc_root.findall(f".//{w('rFonts')}")) + \
                   list(styles_root.findall(f".//{w('rFonts')}")):
@@ -143,7 +125,6 @@ def fix_cjk_fonts(doc_root, styles_root):
             rFonts.set(attr, CJK_FONT)
 
 
-# ── 5. Header image ───────────────────────────────────────────────────────────
 def inject_header(tmp: Path, img: Path):
     with open(img, 'rb') as f:
         f.read(16)
@@ -188,37 +169,32 @@ def inject_header(tmp: Path, img: Path):
     _link_header_in_sectPr(tmp, "rHdr1")
 
 
-# ── 6. Page numbers in footer ─────────────────────────────────────────────────
 def inject_page_numbers(tmp: Path, lang: str, rtl=False):
-    # Algunos lectores (incluido Google Docs y LibreOffice macOS) ignoran el formato localizado de OOXML
-    # Por decisión del usuario, simplemente omitimos la paginación para evitar el 1,2,3... occidental.
+    # Algunos lectores ignoran el formato localizado de OOXML — omitimos paginación para evitar "1,2,3" occidental
     if lang in {"ar", "fa", "ur", "he", "zh", "ja", "ko"}:
         _remove_footer(tmp)
         return
 
     jc_val = "right" if rtl else "center"
-    
-    # Formato de instrucción Word y códigos de idioma
     numFmt = ""
     w_lang = ""
-    if lang == "ar": 
+    if lang == "ar":
         numFmt = "ArabicIndic"
         w_lang = '<w:lang w:val="ar-SA" w:bidi="ar-SA"/>'
-    elif lang in ["fa", "ur"]: 
+    elif lang in ["fa", "ur"]:
         numFmt = "ArabicIndic"
         w_lang = '<w:lang w:val="fa-IR" w:bidi="fa-IR"/>'
-    elif lang == "zh": 
+    elif lang == "zh":
         numFmt = "CHINESECOUNTING"
         w_lang = '<w:lang w:val="zh-CN" w:eastAsia="zh-CN"/>'
-    elif lang == "ja": 
+    elif lang == "ja":
         numFmt = "Aiueo"
         w_lang = '<w:lang w:val="ja-JP" w:eastAsia="ja-JP"/>'
-    elif lang == "he": 
+    elif lang == "he":
         numFmt = "hebrew2"
         w_lang = '<w:lang w:val="he-IL" w:bidi="he-IL"/>'
 
     fmt_str = f" \\* {numFmt} " if numFmt else " "
-    
     pPr_extra = '<w:bidi w:val="1"/>' if rtl else ''
     rPr_extra = (w_lang if w_lang else '') + ('<w:rtl w:val="1"/>' if rtl else '')
 
@@ -226,39 +202,23 @@ def inject_page_numbers(tmp: Path, lang: str, rtl=False):
 <w:ftr xmlns:w="{W}">
   <w:p>
     <w:pPr><w:jc w:val="{jc_val}"/>{pPr_extra}</w:pPr>
-    
     <w:r><w:rPr><w:sz w:val="18"/>{rPr_extra}</w:rPr><w:fldChar w:fldCharType="begin"/></w:r>
     <w:r><w:rPr><w:sz w:val="18"/>{rPr_extra}</w:rPr><w:instrText xml:space="preserve"> PAGE{fmt_str}</w:instrText></w:r>
     <w:r><w:rPr><w:sz w:val="18"/>{rPr_extra}</w:rPr><w:fldChar w:fldCharType="separate"/></w:r>
     <w:r><w:rPr><w:sz w:val="18"/>{rPr_extra}</w:rPr><w:t>1</w:t></w:r>
     <w:r><w:rPr><w:sz w:val="18"/>{rPr_extra}</w:rPr><w:fldChar w:fldCharType="end"/></w:r>
-    
     <w:r><w:rPr><w:sz w:val="18"/>{rPr_extra}</w:rPr><w:t xml:space="preserve"> / </w:t></w:r>
-    
     <w:r><w:rPr><w:sz w:val="18"/>{rPr_extra}</w:rPr><w:fldChar w:fldCharType="begin"/></w:r>
     <w:r><w:rPr><w:sz w:val="18"/>{rPr_extra}</w:rPr><w:instrText xml:space="preserve"> NUMPAGES{fmt_str}</w:instrText></w:r>
     <w:r><w:rPr><w:sz w:val="18"/>{rPr_extra}</w:rPr><w:fldChar w:fldCharType="separate"/></w:r>
     <w:r><w:rPr><w:sz w:val="18"/>{rPr_extra}</w:rPr><w:t>1</w:t></w:r>
     <w:r><w:rPr><w:sz w:val="18"/>{rPr_extra}</w:rPr><w:fldChar w:fldCharType="end"/></w:r>
-    
   </w:p>
 </w:ftr>""", encoding="utf-8")
 
     rels_dir = tmp / "word" / "_rels"
     rels_dir.mkdir(exist_ok=True)
-    ftr_rels = rels_dir / "footer1.xml.rels"
-    ftr_rels.write_text(f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="{RELS_NS}"/>""", encoding="utf-8")
-
-    _add_part(tmp, "/word/footer1.xml",
-              "application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml")
-    _add_rel(tmp, "rFtr1", f"{R}/footer", "footer1.xml")
-    _link_footer_in_sectPr(tmp, "rFtr1")
-
-    rels_dir = tmp / "word" / "_rels"
-    rels_dir.mkdir(exist_ok=True)
-    ftr_rels = rels_dir / "footer1.xml.rels"
-    ftr_rels.write_text(f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+    (rels_dir / "footer1.xml.rels").write_text(f"""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="{RELS_NS}"/>""", encoding="utf-8")
 
     _add_part(tmp, "/word/footer1.xml",
@@ -267,7 +227,6 @@ def inject_page_numbers(tmp: Path, lang: str, rtl=False):
     _link_footer_in_sectPr(tmp, "rFtr1")
 
 
-# ── Helpers para rels / content types / sectPr ───────────────────────────────
 def _add_part(tmp, part_name, content_type):
     ct_path = tmp / "[Content_Types].xml"
     ct = etree.parse(str(ct_path)).getroot()
@@ -275,7 +234,6 @@ def _add_part(tmp, part_name, content_type):
         e = etree.SubElement(ct, f"{{{CT}}}Override")
         e.set("PartName", part_name)
         e.set("ContentType", content_type)
-    # png default
     if "png" in part_name or part_name.endswith(".png"):
         if not any(e.get("Extension") == "png" for e in ct.findall(f"{{{CT}}}Default")):
             e = etree.SubElement(ct, f"{{{CT}}}Default")
@@ -309,11 +267,8 @@ def _link_header_in_sectPr(tmp, rel_id):
     for hr in sectPr.findall(w("headerReference")): sectPr.remove(hr)
     hr = etree.SubElement(sectPr, w("headerReference"))
     hr.set(w("type"), "default"); hr.set(r("id"), rel_id)
-    
-    # Pandoc sets titlePg by default, which hides header/footer on page 1. Remove it.
     titlePg = sectPr.find(w("titlePg"))
     if titlePg is not None: sectPr.remove(titlePg)
-        
     etree.ElementTree(doc).write(str(tmp / "word" / "document.xml"),
                                  xml_declaration=True, encoding="UTF-8", standalone=True)
 
@@ -325,11 +280,8 @@ def _link_footer_in_sectPr(tmp, rel_id):
     for fr in sectPr.findall(w("footerReference")): sectPr.remove(fr)
     fr = etree.SubElement(sectPr, w("footerReference"))
     fr.set(w("type"), "default"); fr.set(r("id"), rel_id)
-    
-    # Pandoc sets titlePg by default, which hides header/footer on page 1. Remove it.
     titlePg = sectPr.find(w("titlePg"))
     if titlePg is not None: sectPr.remove(titlePg)
-        
     etree.ElementTree(doc).write(str(tmp / "word" / "document.xml"),
                                  xml_declaration=True, encoding="UTF-8", standalone=True)
 
@@ -344,7 +296,6 @@ def _remove_footer(tmp):
         etree.ElementTree(doc).write(str(doc_path), xml_declaration=True, encoding="UTF-8", standalone=True)
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
 def postprocess(docx_path: Path, lang: str = "", header: Path = None):
     rtl = lang in RTL_LANGS
     cjk = lang in CJK_LANGS
@@ -360,19 +311,14 @@ def postprocess(docx_path: Path, lang: str = "", header: Path = None):
 
         fix_tables(body, rtl=rtl)
         fix_blocktext_spacing(body)
-
         if rtl:
             fix_rtl(body)
-
         if cjk:
             fix_cjk_fonts(doc.getroot(), styles.getroot())
-            styles.write(str(styles_xml), xml_declaration=True,
-                         encoding="UTF-8", standalone=True)
+            styles.write(str(styles_xml), xml_declaration=True, encoding="UTF-8", standalone=True)
 
         doc.write(str(doc_xml), xml_declaration=True, encoding="UTF-8", standalone=True)
-
         inject_page_numbers(tmp, lang=lang, rtl=rtl)
-
         if header and header.exists():
             _add_png_type(tmp)
             inject_header(tmp, header)

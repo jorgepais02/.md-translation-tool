@@ -12,6 +12,8 @@ secrets/
 
 to-do.md
 config.json
+CLAUDE.md
+cache/
 
 # macOS
 .DS_Store
@@ -25,5 +27,6 @@ translated/
 
 # Output
 sources/*
+!sources/.gitkeep
 
 

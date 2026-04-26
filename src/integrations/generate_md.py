@@ -1,11 +1,11 @@
 """
-generate_markdown.py — Convierte texto raw en MD académico con Gemini.
+Convierte texto raw en MD académico con Gemini.
 
 API:
     generate_markdown(text: str, lang: str = "es") -> str
 
 CLI:
-    python generate_markdown.py input.txt [-o output.md] [--lang es]
+    python -m src.integrations.generate_md input.txt [-o output.md] [--lang es]
 """
 
 import argparse, os, re, sys
@@ -29,7 +29,7 @@ Rules:
 - No decorative separators (---)
 - Technical, neutral, academic tone
 - Return ONLY the Markdown content"""
-# Elementos que no deberían aparecer en el output
+
 INVALID_RE = re.compile(r'(<[a-z]+[\s>]|\$\$|^\* )', re.MULTILINE)
 
 def _strip_fences(text: str) -> str:
@@ -40,7 +40,6 @@ def _strip_fences(text: str) -> str:
     return text.strip()
 
 def _validate(md: str) -> list[str]:
-    """Devuelve lista de warnings. Pipeline decide si bloquear o no."""
     warnings = []
     if INVALID_RE.search(md):
         warnings.append("Output contains HTML, LaTeX or asterisk lists")
@@ -60,15 +59,11 @@ def generate_markdown(text: str, lang: str = "es") -> str:
     resp = client.models.generate_content(
         model="gemini-2.5-flash",
         contents=prompt,
-        config=types.GenerateContentConfig(
-            system_instruction=SYSTEM,
-            temperature=0.2,
-        ),
+        config=types.GenerateContentConfig(system_instruction=SYSTEM, temperature=0.2),
     )
 
     md = _strip_fences(resp.text or "")
-    warnings = _validate(md)
-    for w in warnings:
+    for w in _validate(md):
         print(f"  Warning: {w}", file=sys.stderr)
 
     return md

@@ -9,17 +9,11 @@ from pathlib import Path
 from .styles import console, GREEN, BLUE, YELLOW, CYAN, DIM, BRIGHT, FG, needs_refine
 
 from translators import get_translator
-from ai_refiner import refine_markdown
-from translation_pipeline import (
-    parse_markdown_lines,
-    rebuild_markdown_from_translations,
-    generate_docx_document,
-    convert_docx_to_pdf,
-    TRANSLATED_DIR,
-    DRIVE_FOLDER_ID,
-    CONFIG,
-)
-from google_docs_manager import GoogleDocsManager
+from document.refiner import refine_markdown
+from core.parser import parse_markdown_lines, rebuild_markdown_from_translations
+from core.docgen import generate_docx_document, convert_docx_to_pdf
+from core.config import TRANSLATED_DIR, DRIVE_FOLDER_ID, CONFIG
+from integrations.drive import GoogleDocsManager
 
 
 class PipelineView:
@@ -99,12 +93,17 @@ class PipelineView:
         return Group(*parts)
 
 
+def _local_stem(title: str, lang: str) -> str:
+    """Resolve the local output filename stem using config.json local.naming_pattern."""
+    pattern = CONFIG.get("local", {}).get("naming_pattern", "{title}.{lang}")
+    return pattern.replace("{title}", title).replace("{lang}", lang)
+
+
 def run_pipeline(config: dict) -> list[dict]:
     languages  = config["languages"]
     source_cfg = config["source"]
     provider   = config["provider"]
     output_cfg = config["output"]
-    folder_id  = config.get("folder")
 
     project_root = Path(__file__).resolve().parent.parent.parent
     sources_dir  = project_root / "sources"
@@ -156,7 +155,8 @@ def run_pipeline(config: dict) -> list[dict]:
             if es_langs or use_google:
                 es_folder = TRANSLATED_DIR / "es"
                 es_folder.mkdir(parents=True, exist_ok=True)
-                es_file = es_folder / "es.md"
+                es_stem = _local_stem(f_path.stem, "es")
+                es_file = es_folder / f"{es_stem}.md"
                 src_content = f_path.read_text(encoding="utf-8")
                 if not es_file.exists() or es_file.read_text(encoding="utf-8") != src_content:
                     es_file.write_text(src_content, encoding="utf-8")
@@ -176,7 +176,7 @@ def run_pipeline(config: dict) -> list[dict]:
                                 es_warning = str(pdf_err)
                     if use_google:
                         gm  = GoogleDocsManager(console=console)
-                        tgt = folder_id or DRIVE_FOLDER_ID
+                        tgt = DRIVE_FOLDER_ID
                         if CONFIG.get("drive", {}).get("organize_by_language"):
                             tgt = gm.resolve_language_folder(tgt, "es", CONFIG["drive"].get("language_folder_names"))
                         name = gm.resolve_filename(title=f_path.stem, folder_id=tgt, lang="es",
@@ -188,7 +188,7 @@ def run_pipeline(config: dict) -> list[dict]:
                     es_ok = False
                 all_results.append({
                     "lang":      "ES",
-                    "file":      "es.docx" if es_ok else "—",
+                    "file":      f"{es_stem}.docx" if es_ok else "—",
                     "ok":        es_ok,
                     "time":      0.0,
                     "gdocs_url": es_url,
@@ -230,7 +230,7 @@ def run_pipeline(config: dict) -> list[dict]:
 
                     lang_folder = TRANSLATED_DIR / short
                     lang_folder.mkdir(parents=True, exist_ok=True)
-                    out_file = lang_folder / f"{short}.md"
+                    out_file = lang_folder / f"{_local_stem(f_path.stem, short)}.md"
                     new_content = "\n".join(rebuilt) + "\n"
                     if not out_file.exists() or out_file.read_text(encoding="utf-8") != new_content:
                         out_file.write_text(new_content, encoding="utf-8")
@@ -250,7 +250,7 @@ def run_pipeline(config: dict) -> list[dict]:
                     if g_manager:
                         view.set_lang_status(lang, "uploading…")
                         live.update(view.render())
-                        tgt = folder_id or DRIVE_FOLDER_ID
+                        tgt = DRIVE_FOLDER_ID
                         if CONFIG.get("drive", {}).get("organize_by_language"):
                             tgt = g_manager.resolve_language_folder(tgt, short, CONFIG["drive"].get("language_folder_names"))
                         name = g_manager.resolve_filename(title=f_path.stem, folder_id=tgt, lang=short,
@@ -279,7 +279,7 @@ def run_pipeline(config: dict) -> list[dict]:
 
                 return {
                     "lang":      lang,
-                    "file":      f"{short}.docx" if ok else "—",
+                    "file":      f"{_local_stem(f_path.stem, short)}.docx" if ok else "—",
                     "ok":        ok,
                     "time":      elapsed,
                     "gdocs_url": url,
